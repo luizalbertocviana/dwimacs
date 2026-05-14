@@ -354,14 +354,14 @@
   :group 'convenience
   :prefix "init-dwim-")
 
-(defcustom init-dwim-max-candidates 60
+(defcustom init-dwim-max-candidates nil
   "Maximum number of action candidates shown by `init-dwim'.
 If nil, show all collected candidates."
   :type '(choice (const :tag "No limit" nil)
                  (integer :tag "Maximum candidates"))
   :group 'init-dwim)
 
-(defcustom init-dwim-include-low-confidence-actions nil
+(defcustom init-dwim-include-low-confidence-actions t
   "Whether `init-dwim' should include lower-confidence fallback actions.
 When nil, providers should prefer only actions that are strongly related to
 the current context."
@@ -597,10 +597,9 @@ category and title for stable, predictable display."
                   (string< (init-dwim-action-title a)
                            (init-dwim-action-title b)))))))))
 
-(defun init-dwim--display-string (action index)
+(defun init-dwim--display-string (action)
   "Return display string for ACTION at INDEX."
-  (format "%02d  %-12s  %s"
-          index
+  (format "%s  %s"
           (init-dwim-action-category action)
           (init-dwim-action-title action)))
 
@@ -609,8 +608,7 @@ category and title for stable, predictable display."
   (unless actions
     (user-error "No relevant init-dwim actions found"))
   (let* ((table (cl-loop for action in actions
-                         for index from 1
-                         collect (cons (init-dwim--display-string action index)
+                         collect (cons (init-dwim--display-string action)
                                        action)))
          (metadata
           `(metadata
@@ -3593,10 +3591,126 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :action (lambda ()
               (message "GC freed %s" (garbage-collect))))))
 
+(defun init-dwim-personal-provider ()
+  "Personal always-available DWIM actions."
+  (list
+   ;; Emacs/session actions
+   (init-dwim-make-action
+    :title "Save buffers and quit Emacs"
+    :description "Run `save-buffers-kill-terminal'"
+    :category "Session"
+    :priority 95
+    :action (lambda ()
+              (call-interactively #'save-buffers-kill-terminal)))
+
+   (init-dwim-make-action
+    :title "Restart Emacs"
+    :description "Restart Emacs if `restart-emacs' is available"
+    :category "Session"
+    :priority 70
+    :predicate (lambda () (fboundp 'restart-emacs))
+    :action (lambda ()
+              (call-interactively #'restart-emacs)))
+
+   ;; Window navigation
+   (init-dwim-make-action
+    :title "Other window"
+    :description "Move focus to the next window"
+    :category "Window"
+    :priority 90
+    :predicate (lambda () (> (count-windows) 1))
+    :action (lambda ()
+              (other-window 1)))
+
+   (init-dwim-make-action
+    :title "Previous window"
+    :description "Move focus to the previous window"
+    :category "Window"
+    :priority 89
+    :predicate (lambda () (> (count-windows) 1))
+    :action (lambda ()
+              (other-window -1)))
+
+   (init-dwim-make-action
+    :title "Windmove left"
+    :description "Move to the window on the left"
+    :category "Window"
+    :priority 86
+    :predicate (lambda () (fboundp 'windmove-left))
+    :action (lambda () (windmove-left)))
+
+   (init-dwim-make-action
+    :title "Windmove right"
+    :description "Move to the window on the right"
+    :category "Window"
+    :priority 85
+    :predicate (lambda () (fboundp 'windmove-right))
+    :action (lambda () (windmove-right)))
+
+   (init-dwim-make-action
+    :title "Windmove up"
+    :description "Move to the window above"
+    :category "Window"
+    :priority 84
+    :predicate (lambda () (fboundp 'windmove-up))
+    :action (lambda () (windmove-up)))
+
+   (init-dwim-make-action
+    :title "Windmove down"
+    :description "Move to the window below"
+    :category "Window"
+    :priority 83
+    :predicate (lambda () (fboundp 'windmove-down))
+    :action (lambda () (windmove-down)))
+
+   ;; Magit entrypoints
+   (init-dwim-make-action
+    :title "Magit status"
+    :description "Open Magit for the current repository"
+    :category "Git"
+    :priority 100
+    :predicate (lambda () (fboundp 'magit-status))
+    :action (lambda ()
+              (call-interactively #'magit-status)))
+
+   (init-dwim-make-action
+    :title "Magit project status"
+    :description "Open Magit at the current project root"
+    :category "Git"
+    :priority 98
+    :predicate (lambda ()
+                 (and (fboundp 'magit-status)
+                      (fboundp 'project-current)
+                      (project-current nil)))
+    :action (lambda ()
+              (magit-status
+               (project-root (project-current t)))))
+
+   (init-dwim-make-action
+    :title "Magit dispatch"
+    :description "Open Magit transient dispatch"
+    :category "Git"
+    :priority 92
+    :predicate (lambda () (fboundp 'magit-dispatch))
+    :action (lambda ()
+              (call-interactively #'magit-dispatch)))
+
+   (init-dwim-make-action
+    :title "Magit file dispatch"
+    :description "Open Magit actions for the current file"
+    :category "Git"
+    :priority 88
+    :predicate (lambda ()
+                 (and buffer-file-name
+                      (fboundp 'magit-file-dispatch)))
+    :action (lambda ()
+              (call-interactively #'magit-file-dispatch)))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
-      '(init-dwim-region-provider
+      '(init-dwim-personal-provider
+        init-dwim-region-provider
         init-dwim-url-provider
         init-dwim-file-path-provider
         init-dwim-org-provider
@@ -3630,7 +3744,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
 
 ;;;; init-dwim user configuration
 
-(setq init-dwim-max-candidates 1000
+(setq init-dwim-max-candidates nil
       init-dwim-include-low-confidence-actions t
       init-dwim-completion-backend 'consult-if-available
       init-dwim-project-notes-file "NOTES.org"
