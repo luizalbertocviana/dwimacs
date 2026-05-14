@@ -1081,6 +1081,42 @@ This function uses a short timeout and performs minimal HTML title extraction."
         :action (lambda () (kill-new text) (message "Region copied")))
 
        (init-dwim-make-action
+        :title "URL-encode region"
+        :description "Percent-encode the selected text"
+        :category "Region"
+        :priority 70
+        :predicate (lambda () (fboundp 'url-hexify-string))
+        :action (lambda ()
+                  (delete-region beg end)
+                  (insert (url-hexify-string text))))
+
+       (init-dwim-make-action
+        :title "URL-decode region"
+        :description "Decode percent-encoding in the selected text"
+        :category "Region"
+        :priority 68
+        :predicate (lambda () (fboundp 'url-unhex-string))
+        :action (lambda ()
+                  (delete-region beg end)
+                  (insert (url-unhex-string text))))
+
+       (init-dwim-make-action
+        :title "JSON pretty-print region"
+        :description "Format the selected JSON text"
+        :category "Region"
+        :priority 80
+        :action (lambda ()
+                  (condition-case err
+                      (let* ((parsed (json-read-from-string text))
+                             (pretty (with-temp-buffer
+                                       (insert (json-encode parsed))
+                                       (json-pretty-print (point-min) (point-max))
+                                       (buffer-string))))
+                        (delete-region beg end)
+                        (insert pretty))
+                    (error (user-error "Invalid JSON: %s" err)))))
+
+       (init-dwim-make-action
         :title "Kill region"
         :description "Cut the selected text"
         :category "Region"
@@ -1148,6 +1184,17 @@ This function uses a short timeout and performs minimal HTML title extraction."
         :category "Region"
         :priority 60
         :action (lambda () (sort-lines nil beg end)))
+
+       (init-dwim-make-action
+        :title "Reverse region lines"
+        :description "Reverse the order of lines in the selection"
+        :category "Region"
+        :priority 55
+        :action (lambda ()
+                  (let* ((lines (split-string text "\n"))
+                         (reversed (string-join (nreverse lines) "\n")))
+                    (delete-region beg end)
+                    (insert reversed))))
 
        (init-dwim-make-action
         :title "Delete duplicate lines"
@@ -1229,6 +1276,15 @@ This function uses a short timeout and performs minimal HTML title extraction."
         :category "Region"
         :priority 44
         :action (lambda () (call-interactively #'align-regexp)))
+
+       (init-dwim-make-action
+        :title "Replace in region"
+        :description "Query-replace a pattern within the active region only"
+        :category "Region"
+        :priority 85
+        :action (lambda ()
+                  ;; query-replace restricts to region when region is active
+                  (call-interactively #'query-replace-regexp)))
 
        (init-dwim-make-action
         :title "Count pattern occurrences"
