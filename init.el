@@ -738,6 +738,11 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--gptel-buffer-p ()
+  "Return non-nil when inside a gptel chat buffer."
+  (and (fboundp 'gptel-mode)
+       (bound-and-true-p gptel-mode)))
+
 (defun init-dwim--python-mode-p ()
   "Return non-nil in Python buffers."
   (derived-mode-p 'python-mode 'python-ts-mode))
@@ -5700,6 +5705,80 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
                 (insert "breakpoint()  # noqa")
                 (python-indent-line))))))
 
+;;; ── gptel buffer ──────────────────────────────────────────────────────────
+
+(defun init-dwim-gptel-provider ()
+  "Return actions specific to gptel chat buffers."
+  (when (init-dwim--gptel-buffer-p)
+    (list
+     (init-dwim-make-action
+      :title "Send to AI"
+      :description "Send the current input to the AI backend"
+      :category "AI"
+      :priority 100
+      :predicate (lambda () (fboundp 'gptel-send))
+      :action (lambda () (gptel-send)))
+
+     (init-dwim-make-action
+      :title "Change AI model"
+      :description "Switch the model used by gptel in this buffer"
+      :category "AI"
+      :priority 85
+      :predicate (lambda () (fboundp 'gptel-menu))
+      :action (lambda () (call-interactively #'gptel-menu)))
+
+     (init-dwim-make-action
+      :title "Set system prompt"
+      :description "Edit the system prompt for this gptel session"
+      :category "AI"
+      :priority 80
+      :predicate (lambda () (fboundp 'gptel-system-prompt))
+      :action (lambda () (call-interactively #'gptel-system-prompt)))
+
+     (init-dwim-make-action
+      :title "Copy last AI response"
+      :description "Copy the most recent AI reply to the kill ring"
+      :category "AI"
+      :priority 75
+      :action (lambda ()
+                (save-excursion
+                  (goto-char (point-max))
+                  ;; gptel marks responses with text-property gptel 'response
+                  (let* ((end (point))
+                         (beg (or (previous-single-property-change
+                                   end 'gptel (current-buffer) (point-min))
+                                  (point-min)))
+                         (text (buffer-substring-no-properties beg end)))
+                    (kill-new (string-trim text))
+                    (message "Last response copied (%d chars)" (length text))))))
+
+     (init-dwim-make-action
+      :title "Clear chat buffer"
+      :description "Erase the entire gptel conversation"
+      :category "AI"
+      :priority 60
+      :action (lambda ()
+                (when (yes-or-no-p "Clear gptel conversation? ")
+                  (let ((inhibit-read-only t))
+                    (erase-buffer))
+                  (message "Conversation cleared"))))
+
+     (init-dwim-make-action
+      :title "Save chat to file"
+      :description "Write the gptel buffer to a dated log file"
+      :category "AI"
+      :priority 55
+      :action (lambda ()
+                (let* ((dir (expand-file-name "gptel-logs/"
+                                              user-emacs-directory))
+                       (_ (make-directory dir t))
+                       (file (expand-file-name
+                              (format "chat-%s.org"
+                                      (format-time-string "%Y%m%d-%H%M%S"))
+                              dir)))
+                  (write-region (point-min) (point-max) file)
+                  (message "Saved to %s" file)))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -5739,6 +5818,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-evil-provider
         init-dwim-smartparens-provider
         init-dwim-ai-provider
+        init-dwim-gptel-provider
         init-dwim-tab-bar-provider
         init-dwim-spelling-provider
         init-dwim-macro-provider
