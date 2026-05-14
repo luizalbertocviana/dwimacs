@@ -5050,10 +5050,85 @@ This function uses a short timeout and performs minimal HTML title extraction."
                     (display-fill-column-indicator-mode 1))
                   (message "fill-column set to %d" col)))))))
 
+;;; ── Consult augmentation ─────────────────────────────────────────────────
+
+(defun init-dwim-consult-provider ()
+  "Return consult-specific search and navigation actions."
+  (when (fboundp 'consult-line)
+    (list
+     (init-dwim-make-action
+      :title "Search lines (consult)"
+      :description "Incrementally search lines in the buffer with preview"
+      :category "Search"
+      :priority 88
+      :action (lambda () (consult-line)))
+
+     (init-dwim-make-action
+      :title "Search all buffers"
+      :description "Search across all open buffers with consult-line-multi"
+      :category "Search"
+      :priority 82
+      :predicate (lambda () (fboundp 'consult-line-multi))
+      :action (lambda () (consult-line-multi nil)))
+
+     (init-dwim-make-action
+      :title "Outline / headings"
+      :description "Navigate the buffer outline or Org/Markdown headings"
+      :category "Search"
+      :priority 85
+      :predicate (lambda () (fboundp 'consult-outline))
+      :action (lambda () (consult-outline)))
+
+     (init-dwim-make-action
+      :title "Find file in directory"
+      :description "Find file using consult-find from current directory"
+      :category "Search"
+      :priority 75
+      :predicate (lambda () (fboundp 'consult-find))
+      :action (lambda () (consult-find default-directory)))
+
+     (init-dwim-make-action
+      :title "Jump to error in buffer"
+      :description "Use consult-flymake or consult-flycheck to jump to errors"
+      :category "Search"
+      :priority 78
+      :predicate (lambda ()
+                   (or (fboundp 'consult-flymake)
+                       (fboundp 'consult-flycheck)))
+      :action (lambda ()
+                (cond
+                 ((fboundp 'consult-flycheck) (consult-flycheck))
+                 ((fboundp 'consult-flymake) (consult-flymake)))))
+
+     (init-dwim-make-action
+      :title "Search man pages"
+      :description "Browse man pages interactively with consult-man"
+      :category "Search"
+      :priority 60
+      :predicate (lambda () (fboundp 'consult-man))
+      :action (lambda () (consult-man (init-dwim--symbol-string))))
+
+     (init-dwim-make-action
+      :title "Switch to open buffer (other window)"
+      :description "Pick an open buffer and display in another window"
+      :category "Search"
+      :priority 65
+      :predicate (lambda () (fboundp 'consult-buffer-other-window))
+      :action (lambda () (consult-buffer-other-window)))
+
+     (init-dwim-make-action
+      :title "Browse themes"
+      :description "Preview and switch themes interactively"
+      :category "Search"
+      :priority 40
+      :predicate (lambda () (fboundp 'consult-theme))
+      :action (lambda () (call-interactively #'consult-theme))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
       '(init-dwim-session-provider
+        init-dwim-consult-provider
         init-dwim-region-provider
         init-dwim-url-provider
         init-dwim-file-path-provider
