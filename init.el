@@ -5204,12 +5204,76 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :predicate (lambda () (fboundp 'consult-theme))
       :action (lambda () (call-interactively #'consult-theme))))))
 
+;;; ── Expand-region ─────────────────────────────────────────────────────────
+
+(defun init-dwim-expand-region-provider ()
+  "Return expand-region actions when the package is available."
+  (when (fboundp 'er/expand-region)
+    (list
+     (init-dwim-make-action
+      :title "Expand region"
+      :description "Expand the selection to the next semantic unit"
+      :category "Selection"
+      :priority 88
+      :action (lambda () (er/expand-region 1)))
+
+     (init-dwim-make-action
+      :title "Contract region"
+      :description "Shrink the selection to the previous semantic unit"
+      :category "Selection"
+      :priority 85
+      :predicate (lambda () (use-region-p))
+      :action (lambda () (er/contract-region 1)))
+
+     (init-dwim-make-action
+      :title "Expand to word"
+      :description "Select the word at point"
+      :category "Selection"
+      :priority 80
+      :predicate (lambda () (fboundp 'er/mark-word))
+      :action (lambda () (er/mark-word)))
+
+     (init-dwim-make-action
+      :title "Expand to symbol"
+      :description "Select the symbol at point"
+      :category "Selection"
+      :priority 78
+      :predicate (lambda () (fboundp 'er/mark-symbol))
+      :action (lambda () (er/mark-symbol)))
+
+     (init-dwim-make-action
+      :title "Expand to defun"
+      :description "Select the current function definition"
+      :category "Selection"
+      :priority 75
+      :predicate (lambda ()
+                   (and (derived-mode-p 'prog-mode)
+                        (fboundp 'er/mark-defun)))
+      :action (lambda () (er/mark-defun)))
+
+     (init-dwim-make-action
+      :title "Expand to string contents"
+      :description "Select the contents of the string at point"
+      :category "Selection"
+      :priority 72
+      :predicate (lambda () (fboundp 'er/mark-inside-quotes))
+      :action (lambda () (er/mark-inside-quotes)))
+
+     (init-dwim-make-action
+      :title "Expand to balanced expression"
+      :description "Select the innermost balanced pair (parens/brackets/braces)"
+      :category "Selection"
+      :priority 70
+      :predicate (lambda () (fboundp 'er/mark-inside-pairs))
+      :action (lambda () (er/mark-inside-pairs))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
       '(init-dwim-session-provider
         init-dwim-consult-provider
         init-dwim-region-provider
+        init-dwim-expand-region-provider
         init-dwim-url-provider
         init-dwim-file-path-provider
         init-dwim-org-provider
