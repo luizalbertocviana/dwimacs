@@ -3663,6 +3663,15 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :predicate (lambda () (fboundp 'windmove-down))
     :action (lambda () (windmove-down)))
 
+   (init-dwim-make-action
+    :title "Explain DWIM actions"
+    :description "Show why DWIM actions are available or filtered out"
+    :category "DWIM"
+    :priority 120
+    :predicate (lambda () (fboundp 'init-dwim-explain))
+    :action (lambda ()
+              (call-interactively #'init-dwim-explain)))
+
    ;; Magit entrypoints
    (init-dwim-make-action
     :title "Magit status"
