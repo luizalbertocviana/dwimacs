@@ -707,6 +707,10 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--eat-buffer-p ()
+  "Return non-nil when inside an eat terminal buffer."
+  (derived-mode-p 'eat-mode))
+
 (defun init-dwim--restclient-mode-p ()
   "Return non-nil in restclient or verb buffers."
   (or (derived-mode-p 'restclient-mode)
@@ -4887,6 +4891,67 @@ This function uses a short timeout and performs minimal HTML title extraction."
                   (when (fboundp 'restclient-narrow-to-current)
                     (restclient-narrow-to-current))))))))
 
+;;; ── eat terminal buffer ───────────────────────────────────────────────────
+
+(defun init-dwim-eat-provider ()
+  "Return actions for eat terminal buffers."
+  (when (init-dwim--eat-buffer-p)
+    (list
+     (init-dwim-make-action
+      :title "Send region to eat"
+      :description "Paste the active region into this eat terminal"
+      :category "Terminal"
+      :priority 95
+      :predicate (lambda ()
+                   (and (use-region-p)
+                        (fboundp 'eat-send-string)))
+      :action (lambda ()
+                (when (use-region-p)
+                  (eat-send-string
+                   (buffer-substring-no-properties
+                    (region-beginning) (region-end))))))
+
+     (init-dwim-make-action
+      :title "Clear terminal"
+      :description "Send a clear command to the eat terminal"
+      :category "Terminal"
+      :priority 85
+      :predicate (lambda () (fboundp 'eat-send-string))
+      :action (lambda () (eat-send-string "clear\n")))
+
+     (init-dwim-make-action
+      :title "Copy last output"
+      :description "Copy the last command output to the kill ring"
+      :category "Terminal"
+      :priority 80
+      :action (lambda ()
+                ;; Heuristic: copy from last prompt line to point-max
+                (let ((text (buffer-substring-no-properties
+                             (save-excursion
+                               (goto-char (point-max))
+                               (re-search-backward "^[^[:space:]]" nil t)
+                               (line-beginning-position))
+                             (point-max))))
+                  (kill-new text)
+                  (message "Copied %d chars from terminal" (length text)))))
+
+     (init-dwim-make-action
+      :title "Rename eat buffer"
+      :description "Give this terminal buffer a descriptive name"
+      :category "Terminal"
+      :priority 70
+      :action (lambda () (call-interactively #'rename-buffer)))
+
+     (init-dwim-make-action
+      :title "Toggle eat line/char mode"
+      :description "Switch between eat line mode and char mode"
+      :category "Terminal"
+      :priority 65
+      :action (lambda ()
+                (cond
+                 ((fboundp 'eat-emacs-mode) (eat-emacs-mode))
+                 (t (message "eat mode toggle not available"))))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -4926,6 +4991,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
         init-dwim-macro-provider
         init-dwim-narrow-provider
         init-dwim-shell-provider
+        init-dwim-eat-provider
         init-dwim-history-provider
         init-dwim-restclient-provider
         init-dwim-emacs-provider))
