@@ -5779,6 +5779,83 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
                   (write-region (point-min) (point-max) file)
                   (message "Saved to %s" file)))))))
 
+;;; ── Package management ────────────────────────────────────────────────────
+
+(defun init-dwim-package-provider ()
+  "Return package and straight.el management actions."
+  (list
+   (init-dwim-make-action
+    :title "List installed packages"
+    :description "Open the package list buffer"
+    :category "Package"
+    :priority 70
+    :action (lambda () (list-packages)))
+
+   (init-dwim-make-action
+    :title "Install package"
+    :description "Install a package with straight or package.el"
+    :category "Package"
+    :priority 68
+    :action (lambda ()
+              (if (fboundp 'straight-use-package)
+                  (call-interactively #'straight-use-package)
+                (call-interactively #'package-install))))
+
+   (init-dwim-make-action
+    :title "straight: pull all"
+    :description "Update all straight.el recipes from their remotes"
+    :category "Package"
+    :priority 65
+    :predicate (lambda () (fboundp 'straight-pull-all))
+    :action (lambda () (straight-pull-all)))
+
+   (init-dwim-make-action
+    :title "straight: rebuild all"
+    :description "Rebuild all straight.el packages"
+    :category "Package"
+    :priority 62
+    :predicate (lambda () (fboundp 'straight-rebuild-all))
+    :action (lambda () (straight-rebuild-all)))
+
+   (init-dwim-make-action
+    :title "straight: check for updates"
+    :description "Fetch and check for updates without applying them"
+    :category "Package"
+    :priority 60
+    :predicate (lambda () (fboundp 'straight-fetch-all))
+    :action (lambda () (straight-fetch-all)))
+
+   (init-dwim-make-action
+    :title "straight: freeze lockfile"
+    :description "Write the current package versions to a lockfile"
+    :category "Package"
+    :priority 55
+    :predicate (lambda () (fboundp 'straight-freeze-versions))
+    :action (lambda () (straight-freeze-versions)))
+
+   (init-dwim-make-action
+    :title "straight: thaw lockfile"
+    :description "Restore package versions from the lockfile"
+    :category "Package"
+    :priority 53
+    :predicate (lambda () (fboundp 'straight-thaw-versions))
+    :action (lambda () (straight-thaw-versions)))
+
+   (init-dwim-make-action
+    :title "Describe package at point"
+    :description "Show information about the package named at point"
+    :category "Package"
+    :priority 72
+    :predicate (lambda ()
+                 (and (init-dwim--symbol-string)
+                      (intern-soft (init-dwim--symbol-string))
+                      (or (fboundp 'describe-package)
+                          (fboundp 'straight--get-package))))
+    :action (lambda ()
+              (let ((sym (intern-soft (init-dwim--symbol-string))))
+                (when sym
+                  (describe-package sym)))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -5828,6 +5905,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-history-provider
         init-dwim-restclient-provider
         init-dwim-focus-provider
+        init-dwim-package-provider
         init-dwim-emacs-provider))
 
 (provide 'init-dwim)
