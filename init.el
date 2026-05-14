@@ -617,8 +617,8 @@ category and title for stable, predictable display."
                            (init-dwim-action-title b)))))))))
 
 (defun init-dwim--display-string (action)
-  "Return display string for ACTION at INDEX."
-  (format "%s  %s"
+  "Return display string for ACTION."
+  (format "%-16s  %s"
           (init-dwim-action-category action)
           (init-dwim-action-title action)))
 
@@ -629,6 +629,11 @@ category and title for stable, predictable display."
   (let* ((table (cl-loop for action in actions
                          collect (cons (init-dwim--display-string action)
                                        action)))
+         (max-candidate-width
+          (apply #'max
+                 (mapcar (lambda (cell)
+                           (string-width (car cell)))
+                         table)))
          (metadata
           `(metadata
             (category . init-dwim-action)
@@ -638,7 +643,14 @@ category and title for stable, predictable display."
                          (desc (and action
                                     (init-dwim-action-description action))))
                     (if (and desc (not (string-empty-p desc)))
-                        (format " — %s" desc)
+                        (let* ((padding-width
+                                (+ 2 (- max-candidate-width
+                                        (string-width candidate))))
+                               (padding
+                                (make-string (max 1 padding-width) ?\s)))
+                          (propertize
+                           (concat padding "— " desc)
+                           'face 'completions-annotations))
                       "")))))))
     (cond
      ((and (eq init-dwim-completion-backend 'consult-if-available)
