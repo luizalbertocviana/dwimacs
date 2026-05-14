@@ -738,6 +738,10 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--sp-active-p ()
+  "Return non-nil when smartparens-mode is active."
+  (bound-and-true-p smartparens-mode))
+
 (defun init-dwim--focus-mode-active-p ()
   "Return non-nil if any focus/writing mode is active."
   (or (and (boundp 'writeroom-mode) writeroom-mode)
@@ -5267,6 +5271,92 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :predicate (lambda () (fboundp 'er/mark-inside-pairs))
       :action (lambda () (er/mark-inside-pairs))))))
 
+;;; ── Smartparens ───────────────────────────────────────────────────────────
+
+(defun init-dwim-smartparens-provider ()
+  "Return smartparens structural editing actions."
+  (when (init-dwim--sp-active-p)
+    (list
+     (init-dwim-make-action
+      :title "Slurp forward"
+      :description "Extend the current sexp to include the next form"
+      :category "Parens"
+      :priority 90
+      :predicate (lambda () (fboundp 'sp-forward-slurp-sexp))
+      :action (lambda () (sp-forward-slurp-sexp)))
+
+     (init-dwim-make-action
+      :title "Barf forward"
+      :description "Shrink the current sexp by expelling the last form"
+      :category "Parens"
+      :priority 88
+      :predicate (lambda () (fboundp 'sp-forward-barf-sexp))
+      :action (lambda () (sp-forward-barf-sexp)))
+
+     (init-dwim-make-action
+      :title "Slurp backward"
+      :description "Extend the current sexp to include the previous form"
+      :category "Parens"
+      :priority 86
+      :predicate (lambda () (fboundp 'sp-backward-slurp-sexp))
+      :action (lambda () (sp-backward-slurp-sexp)))
+
+     (init-dwim-make-action
+      :title "Barf backward"
+      :description "Shrink the current sexp by expelling the first form"
+      :category "Parens"
+      :priority 84
+      :predicate (lambda () (fboundp 'sp-backward-barf-sexp))
+      :action (lambda () (sp-backward-barf-sexp)))
+
+     (init-dwim-make-action
+      :title "Splice sexp"
+      :description "Remove the surrounding pair, keeping its contents"
+      :category "Parens"
+      :priority 82
+      :predicate (lambda () (fboundp 'sp-splice-sexp))
+      :action (lambda () (sp-splice-sexp)))
+
+     (init-dwim-make-action
+      :title "Wrap with parens"
+      :description "Wrap the expression at point in parentheses"
+      :category "Parens"
+      :priority 80
+      :predicate (lambda () (fboundp 'sp-wrap-round))
+      :action (lambda () (sp-wrap-round)))
+
+     (init-dwim-make-action
+      :title "Wrap with brackets"
+      :description "Wrap the expression at point in square brackets"
+      :category "Parens"
+      :priority 78
+      :predicate (lambda () (fboundp 'sp-wrap-square))
+      :action (lambda () (sp-wrap-square)))
+
+     (init-dwim-make-action
+      :title "Wrap with braces"
+      :description "Wrap the expression at point in curly braces"
+      :category "Parens"
+      :priority 76
+      :predicate (lambda () (fboundp 'sp-wrap-curly))
+      :action (lambda () (sp-wrap-curly)))
+
+     (init-dwim-make-action
+      :title "Kill sexp"
+      :description "Kill the balanced expression at point"
+      :category "Parens"
+      :priority 74
+      :predicate (lambda () (fboundp 'sp-kill-sexp))
+      :action (lambda () (sp-kill-sexp)))
+
+     (init-dwim-make-action
+      :title "Select containing sexp"
+      :description "Select the entire containing balanced expression"
+      :category "Parens"
+      :priority 72
+      :predicate (lambda () (fboundp 'sp-select-next-thing))
+      :action (lambda () (sp-select-next-thing))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -5302,6 +5392,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
         init-dwim-snippet-provider
         init-dwim-help-provider
         init-dwim-evil-provider
+        init-dwim-smartparens-provider
         init-dwim-ai-provider
         init-dwim-tab-bar-provider
         init-dwim-spelling-provider
