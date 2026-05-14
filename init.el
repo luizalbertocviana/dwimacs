@@ -738,6 +738,10 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--python-mode-p ()
+  "Return non-nil in Python buffers."
+  (derived-mode-p 'python-mode 'python-ts-mode))
+
 (defun init-dwim--sp-active-p ()
   "Return non-nil when smartparens-mode is active."
   (bound-and-true-p smartparens-mode))
@@ -5530,6 +5534,124 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
                     (indent-region (region-beginning) (region-end))
                   (indent-region (point-min) (point-max)))))))))
 
+;;; ── Python ────────────────────────────────────────────────────────────────
+
+(defun init-dwim-python-provider ()
+  "Return actions specific to Python buffers."
+  (when (init-dwim--python-mode-p)
+    (list
+     (init-dwim-make-action
+      :title "Run file with Python"
+      :description "Execute the current file with python3"
+      :category "Python"
+      :priority 95
+      :predicate (lambda () (and (buffer-file-name) (executable-find "python3")))
+      :action (lambda ()
+                (compile (format "python3 %s"
+                                 (shell-quote-argument (buffer-file-name))))))
+
+     (init-dwim-make-action
+      :title "Run pytest on file"
+      :description "Run pytest for the current test file"
+      :category "Python"
+      :priority 92
+      :predicate (lambda ()
+                   (or (fboundp 'pytest-one)
+                       (fboundp 'pytest-module)
+                       (executable-find "pytest")))
+      :action (lambda ()
+                (cond
+                 ((fboundp 'pytest-module) (pytest-module))
+                 ((executable-find "pytest")
+                  (compile (format "pytest %s -v"
+                                   (shell-quote-argument (buffer-file-name)))))
+                 (t (user-error "pytest not available")))))
+
+     (init-dwim-make-action
+      :title "Run nearest pytest"
+      :description "Run the test function nearest to point"
+      :category "Python"
+      :priority 90
+      :predicate (lambda () (fboundp 'pytest-one))
+      :action (lambda () (call-interactively #'pytest-one)))
+
+     (init-dwim-make-action
+      :title "Start Python shell"
+      :description "Open a Python interactive shell for this buffer"
+      :category "Python"
+      :priority 88
+      :predicate (lambda () (fboundp 'run-python))
+      :action (lambda () (run-python nil nil t)))
+
+     (init-dwim-make-action
+      :title "Send defun to Python shell"
+      :description "Evaluate the function at point in the Python shell"
+      :category "Python"
+      :priority 85
+      :predicate (lambda () (fboundp 'python-shell-send-defun))
+      :action (lambda () (python-shell-send-defun nil)))
+
+     (init-dwim-make-action
+      :title "Send buffer to Python shell"
+      :description "Evaluate the entire buffer in the Python shell"
+      :category "Python"
+      :priority 82
+      :predicate (lambda () (fboundp 'python-shell-send-buffer))
+      :action (lambda () (python-shell-send-buffer)))
+
+     (init-dwim-make-action
+      :title "Check with flake8"
+      :description "Run flake8 on the current file"
+      :category "Python"
+      :priority 78
+      :predicate (lambda () (and (buffer-file-name) (executable-find "flake8")))
+      :action (lambda ()
+                (compile (format "flake8 %s"
+                                 (shell-quote-argument (buffer-file-name))))))
+
+     (init-dwim-make-action
+      :title "Type-check with mypy"
+      :description "Run mypy type checker on the current file"
+      :category "Python"
+      :priority 76
+      :predicate (lambda () (and (buffer-file-name) (executable-find "mypy")))
+      :action (lambda ()
+                (compile (format "mypy %s"
+                                 (shell-quote-argument (buffer-file-name))))))
+
+     (init-dwim-make-action
+      :title "Format with black"
+      :description "Format the buffer with the black formatter"
+      :category "Python"
+      :priority 80
+      :predicate (lambda () (and (buffer-file-name) (executable-find "black")))
+      :action (lambda ()
+                (shell-command
+                 (format "black %s" (shell-quote-argument (buffer-file-name))))
+                (revert-buffer nil t t)))
+
+     (init-dwim-make-action
+      :title "Sort imports with isort"
+      :description "Sort and organise imports using isort"
+      :category "Python"
+      :priority 75
+      :predicate (lambda () (and (buffer-file-name) (executable-find "isort")))
+      :action (lambda ()
+                (shell-command
+                 (format "isort %s" (shell-quote-argument (buffer-file-name))))
+                (revert-buffer nil t t)))
+
+     (init-dwim-make-action
+      :title "Insert breakpoint"
+      :description "Insert a breakpoint() call at point"
+      :category "Python"
+      :priority 70
+      :action (lambda ()
+                (back-to-indentation)
+                (open-line 1)
+                (insert "breakpoint()  # noqa")
+                (python-indent-line))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -5555,6 +5677,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-xref-provider
         init-dwim-elisp-provider
         init-dwim-programming-provider
+        init-dwim-python-provider
         init-dwim-diagnostics-provider
         init-dwim-text-provider
         init-dwim-json-yaml-provider
