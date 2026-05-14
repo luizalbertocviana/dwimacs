@@ -538,26 +538,6 @@ Each provider is called with no arguments and should return a list of action
 plists created by `init-dwim-make-action'.  A provider may return nil when it
 has no relevant actions for the current context.")
 
-(defun init-dwim-register-provider (provider &optional append)
-  "Register PROVIDER in `init-dwim-providers'.
-
-PROVIDER should be a function or symbol naming a function.  When APPEND is
-non-nil, add PROVIDER to the end of the provider list; otherwise add it to the
-front.  Duplicate registrations are ignored."
-  (unless (functionp provider)
-    (unless (and (symbolp provider) (fboundp provider))
-      (error "Provider is not callable: %S" provider)))
-  (unless (memq provider init-dwim-providers)
-    (setq init-dwim-providers
-          (if append
-              (append init-dwim-providers (list provider))
-            (cons provider init-dwim-providers))))
-  provider)
-
-(defun init-dwim-unregister-provider (provider)
-  "Remove PROVIDER from `init-dwim-providers'."
-  (setq init-dwim-providers (delq provider init-dwim-providers)))
-
 (defun init-dwim-provider-enabled-p (provider)
   "Return non-nil if PROVIDER is enabled."
   (not (memq provider init-dwim-disabled-providers)))
