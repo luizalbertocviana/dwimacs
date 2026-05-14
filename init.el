@@ -3764,8 +3764,8 @@ This function uses a short timeout and performs minimal HTML title extraction."
 ;; M-RET is a good default because it is mnemonic, easy to press, works in GUI
 ;; and terminal Emacs on most systems, and is explicitly suggested by init-dwim.
 (with-eval-after-load 'evil
-  (evil-set-leader '(normal visual motion) (kbd "SPC"))
-  (evil-define-key '(normal visual motion) 'global
+  (evil-set-leader '(normal visual motion emacs) (kbd "SPC"))
+  (evil-define-key '(normal visual motion emacs) 'global
     (kbd "<leader> SPC") #'init-dwim))
 
 (provide 'init)
