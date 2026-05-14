@@ -350,6 +350,18 @@
   (doom-modeline-buffer-encoding nil)
   (doom-modeline-vcs-max-length 24))
 
+(use-package restclient
+  :defer t
+  :mode ("\\.http\\'" . restclient-mode))
+
+(use-package olivetti
+  :defer t
+  :custom
+  (olivetti-body-width 88))
+
+(use-package package-lint
+  :defer t)
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'thingatpt)
