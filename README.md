@@ -322,4 +322,4 @@ The DWIM implementation is included directly in the init file. It is not loaded 
 
 ## License
 
-No license is declared in the provided file. Add one before publishing or redistributing this configuration.
+MIT
