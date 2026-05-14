@@ -707,6 +707,10 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--elisp-mode-p ()
+  "Return non-nil in Emacs Lisp buffers."
+  (derived-mode-p 'emacs-lisp-mode 'lisp-interaction-mode))
+
 (defun init-dwim--number-at-point ()
   "Return the number at point as a number, or nil."
   (number-at-point))
@@ -4682,6 +4686,137 @@ This function uses a short timeout and performs minimal HTML title extraction."
                 (kill-new (number-to-string num))
                 (message "Copied: %s" num))))))
 
+;;; ── Emacs Lisp development ────────────────────────────────────────────────
+
+(defun init-dwim-elisp-provider ()
+  "Return actions specific to Emacs Lisp buffers."
+  (when (init-dwim--elisp-mode-p)
+    (list
+     (init-dwim-make-action
+      :title "Evaluate defun"
+      :description "Evaluate the top-level form at point"
+      :category "Elisp"
+      :priority 100
+      :action (lambda () (call-interactively #'eval-defun)))
+
+     (init-dwim-make-action
+      :title "Evaluate last sexp"
+      :description "Evaluate the expression before point"
+      :category "Elisp"
+      :priority 98
+      :action (lambda () (call-interactively #'eval-last-sexp)))
+
+     (init-dwim-make-action
+      :title "Evaluate buffer"
+      :description "Evaluate all forms in this buffer"
+      :category "Elisp"
+      :priority 92
+      :action (lambda () (eval-buffer) (message "Buffer evaluated")))
+
+     (init-dwim-make-action
+      :title "Macroexpand at point"
+      :description "Expand the macro form at point and display the result"
+      :category "Elisp"
+      :priority 85
+      :action (lambda () (call-interactively #'pp-macroexpand-expression)))
+
+     (init-dwim-make-action
+      :title "Macroexpand-1 at point"
+      :description "Expand one step of the macro at point"
+      :category "Elisp"
+      :priority 84
+      :predicate (lambda () (fboundp 'macroexpand-1))
+      :action (lambda ()
+                (let* ((form (sexp-at-point))
+                       (expanded (macroexpand-1 form)))
+                  (pp-display-expression expanded "*Macroexpand-1*"))))
+
+     (init-dwim-make-action
+      :title "Jump to definition"
+      :description "Jump to the definition of the symbol at point"
+      :category "Elisp"
+      :priority 90
+      :predicate (lambda () (init-dwim--symbol-string))
+      :action (lambda ()
+                (let ((sym (intern-soft (init-dwim--symbol-string))))
+                  (when sym
+                    (cond
+                     ((fboundp sym) (find-function sym))
+                     ((boundp sym) (find-variable sym))
+                     (t (user-error "Cannot find definition of %s" sym)))))))
+
+     (init-dwim-make-action
+      :title "Describe symbol at point"
+      :description "Show help for the function or variable at point"
+      :category "Elisp"
+      :priority 88
+      :predicate (lambda () (init-dwim--symbol-string))
+      :action (lambda ()
+                (let ((sym (intern-soft (init-dwim--symbol-string))))
+                  (when sym
+                    (cond
+                     ((fboundp sym) (describe-function sym))
+                     ((boundp sym) (describe-variable sym))
+                     (t (user-error "Unknown symbol %s" sym)))))))
+
+     (init-dwim-make-action
+      :title "Byte-compile this file"
+      :description "Byte-compile the current Emacs Lisp file"
+      :category "Elisp"
+      :priority 70
+      :predicate (lambda ()
+                   (and (buffer-file-name)
+                        (string-match-p "\\.el\\'" (buffer-file-name))))
+      :action (lambda ()
+                (byte-compile-file (buffer-file-name))
+                (message "Byte-compiled %s" (buffer-file-name))))
+
+     (init-dwim-make-action
+      :title "Byte-compile and load"
+      :description "Byte-compile and immediately load this file"
+      :category "Elisp"
+      :priority 68
+      :predicate (lambda ()
+                   (and (buffer-file-name)
+                        (string-match-p "\\.el\\'" (buffer-file-name))))
+      :action (lambda ()
+                (byte-recompile-file (buffer-file-name) nil 0)
+                (load-file (concat (file-name-sans-extension (buffer-file-name)) ".elc"))))
+
+     (init-dwim-make-action
+      :title "Check for checkdoc issues"
+      :description "Run checkdoc to find documentation style problems"
+      :category "Elisp"
+      :priority 60
+      :predicate (lambda () (fboundp 'checkdoc))
+      :action (lambda () (checkdoc)))
+
+     (init-dwim-make-action
+      :title "Lint with package-lint"
+      :description "Run package-lint on this file"
+      :category "Elisp"
+      :priority 55
+      :predicate (lambda () (fboundp 'package-lint-current-buffer))
+      :action (lambda () (package-lint-current-buffer)))
+
+     (init-dwim-make-action
+      :title "Disassemble function"
+      :description "Show bytecode disassembly for the function at point"
+      :category "Elisp"
+      :priority 50
+      :predicate (lambda () (init-dwim--symbol-string))
+      :action (lambda ()
+                (when-let ((sym (intern-soft (init-dwim--symbol-string))))
+                  (disassemble sym))))
+
+     (init-dwim-make-action
+      :title "Edebug defun"
+      :description "Instrument the top-level form for Edebug stepping"
+      :category "Elisp"
+      :priority 65
+      :predicate (lambda () (fboundp 'edebug-defun))
+      :action (lambda () (call-interactively #'edebug-defun))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -4703,6 +4838,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
         init-dwim-symbol-provider
         init-dwim-number-provider
         init-dwim-xref-provider
+        init-dwim-elisp-provider
         init-dwim-programming-provider
         init-dwim-diagnostics-provider
         init-dwim-text-provider
