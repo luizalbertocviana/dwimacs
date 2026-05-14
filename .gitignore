@@ -1,2 +1,7 @@
 /eln-cache/
 /var/
+/elpa/
+/straight/build-cache.el
+/straight/build/
+/straight/modified/
+/straight/repos/
