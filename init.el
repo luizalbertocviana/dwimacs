@@ -202,8 +202,15 @@
   (eglot-autoshutdown t)
   (eglot-confirm-server-initiated-edits nil))
 
-(use-package flycheck
-  :hook (prog-mode . flycheck-mode))
+(use-package flymake
+  :straight nil
+  :ensure nil
+  :hook ((emacs-lisp-mode . flymake-mode)
+         (prog-mode . flymake-mode))
+  :custom
+  (flymake-no-changes-timeout 0.5)
+  (flymake-start-on-flymake-mode t)
+  (flymake-start-on-save-buffer t))
 
 (use-package apheleia
   :demand t
