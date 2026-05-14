@@ -707,6 +707,13 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--restclient-mode-p ()
+  "Return non-nil in restclient or verb buffers."
+  (or (derived-mode-p 'restclient-mode)
+      (derived-mode-p 'verb-mode)
+      (and (buffer-file-name)
+           (string-match-p "\\.http\\'" (buffer-file-name)))))
+
 (defun init-dwim--elisp-mode-p ()
   "Return non-nil in Emacs Lisp buffers."
   (derived-mode-p 'emacs-lisp-mode 'lisp-interaction-mode))
@@ -4817,6 +4824,69 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :predicate (lambda () (fboundp 'edebug-defun))
       :action (lambda () (call-interactively #'edebug-defun))))))
 
+;;; ── REST / HTTP client ────────────────────────────────────────────────────
+
+(defun init-dwim-restclient-provider ()
+  "Return actions for REST client buffers (restclient, verb, .http files)."
+  (when (init-dwim--restclient-mode-p)
+    (list
+     (init-dwim-make-action
+      :title "Send request at point"
+      :description "Execute the HTTP request at point"
+      :category "HTTP"
+      :priority 100
+      :action (lambda ()
+                (cond
+                 ((fboundp 'restclient-http-send-current)
+                  (restclient-http-send-current))
+                 ((fboundp 'verb-send-request-on-point)
+                  (verb-send-request-on-point))
+                 (t (user-error "No HTTP send command available")))))
+
+     (init-dwim-make-action
+      :title "Send request and focus response"
+      :description "Execute the request and jump to the response buffer"
+      :category "HTTP"
+      :priority 95
+      :predicate (lambda () (fboundp 'restclient-http-send-current-stay-in-window))
+      :action (lambda () (restclient-http-send-current-stay-in-window)))
+
+     (init-dwim-make-action
+      :title "Copy request as curl"
+      :description "Copy the current request as a curl command"
+      :category "HTTP"
+      :priority 80
+      :predicate (lambda () (fboundp 'restclient-copy-curl-command))
+      :action (lambda () (restclient-copy-curl-command)))
+
+     (init-dwim-make-action
+      :title "Jump to next request"
+      :description "Move point to the next HTTP request in the file"
+      :category "HTTP"
+      :priority 70
+      :predicate (lambda () (fboundp 'restclient-jump-next))
+      :action (lambda () (restclient-jump-next)))
+
+     (init-dwim-make-action
+      :title "Jump to previous request"
+      :description "Move point to the previous HTTP request in the file"
+      :category "HTTP"
+      :priority 68
+      :predicate (lambda () (fboundp 'restclient-jump-prev))
+      :action (lambda () (restclient-jump-prev)))
+
+     (init-dwim-make-action
+      :title "Toggle narrowing to request"
+      :description "Narrow buffer to the current HTTP request"
+      :category "HTTP"
+      :priority 60
+      :predicate (lambda () (fboundp 'restclient-narrow-to-current))
+      :action (lambda ()
+                (if (buffer-narrowed-p)
+                    (widen)
+                  (when (fboundp 'restclient-narrow-to-current)
+                    (restclient-narrow-to-current))))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -4857,6 +4927,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
         init-dwim-narrow-provider
         init-dwim-shell-provider
         init-dwim-history-provider
+        init-dwim-restclient-provider
         init-dwim-emacs-provider))
 
 (provide 'init-dwim)
