@@ -707,6 +707,20 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--number-at-point ()
+  "Return the number at point as a number, or nil."
+  (number-at-point))
+
+(defun init-dwim--number-bounds-at-point ()
+  "Return bounds of number at point, or nil."
+  (bounds-of-thing-at-point 'number))
+
+(defun init-dwim--replace-number-at-point (n)
+  "Replace the number at point with N."
+  (when-let ((bounds (init-dwim--number-bounds-at-point)))
+    (delete-region (car bounds) (cdr bounds))
+    (insert (number-to-string n))))
+
 (defun init-dwim--region-active-p ()
   "Return non-nil when there is an active region."
   (use-region-p))
@@ -4620,6 +4634,54 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :predicate (lambda () (fboundp 'consult-resume))
     :action (lambda () (consult-resume)))))
 
+;;; ── Number at point ───────────────────────────────────────────────────────
+
+(defun init-dwim-number-provider ()
+  "Return actions when point is on or near a number."
+  (when-let ((num (init-dwim--number-at-point)))
+    (list
+     (init-dwim-make-action
+      :title "Increment number"
+      :description "Increase the number at point by 1"
+      :category "Number"
+      :priority 90
+      :action (lambda () (init-dwim--replace-number-at-point (1+ num))))
+
+     (init-dwim-make-action
+      :title "Decrement number"
+      :description "Decrease the number at point by 1"
+      :category "Number"
+      :priority 88
+      :action (lambda () (init-dwim--replace-number-at-point (1- num))))
+
+     (init-dwim-make-action
+      :title "Increment by N"
+      :description "Add a custom amount to the number at point"
+      :category "Number"
+      :priority 82
+      :action (lambda ()
+                (let ((delta (read-number "Increment by: " 1)))
+                  (init-dwim--replace-number-at-point (+ num delta)))))
+
+     (init-dwim-make-action
+      :title "Convert to hex"
+      :description "Replace decimal number at point with its hex representation"
+      :category "Number"
+      :priority 75
+      :action (lambda ()
+                (when-let ((b (init-dwim--number-bounds-at-point)))
+                  (delete-region (car b) (cdr b)))
+                (insert (format "0x%x" num))))
+
+     (init-dwim-make-action
+      :title "Copy number"
+      :description "Copy the number at point to the kill ring"
+      :category "Number"
+      :priority 60
+      :action (lambda ()
+                (kill-new (number-to-string num))
+                (message "Copied: %s" num))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -4639,6 +4701,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
         init-dwim-comint-provider
         init-dwim-isearch-provider
         init-dwim-symbol-provider
+        init-dwim-number-provider
         init-dwim-xref-provider
         init-dwim-programming-provider
         init-dwim-diagnostics-provider
