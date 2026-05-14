@@ -707,6 +707,12 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--focus-mode-active-p ()
+  "Return non-nil if any focus/writing mode is active."
+  (or (and (boundp 'writeroom-mode) writeroom-mode)
+      (and (boundp 'olivetti-mode) olivetti-mode)
+      (and (boundp 'darkroom-mode) darkroom-mode)))
+
 (defun init-dwim--eat-buffer-p ()
   "Return non-nil when inside an eat terminal buffer."
   (derived-mode-p 'eat-mode))
@@ -4952,6 +4958,91 @@ This function uses a short timeout and performs minimal HTML title extraction."
                  ((fboundp 'eat-emacs-mode) (eat-emacs-mode))
                  (t (message "eat mode toggle not available"))))))))
 
+;;; ── Focus / writing mode ─────────────────────────────────────────────────
+
+(defun init-dwim-focus-provider ()
+  "Return writing focus and distraction-free actions."
+  (when (or (derived-mode-p 'text-mode 'org-mode 'markdown-mode)
+            (init-dwim--focus-mode-active-p))
+    (list
+     (init-dwim-make-action
+      :title "Toggle focus / writeroom mode"
+      :description "Enter or exit distraction-free writing mode"
+      :category "Focus"
+      :priority 90
+      :predicate (lambda ()
+                   (or (fboundp 'writeroom-mode)
+                       (fboundp 'olivetti-mode)
+                       (fboundp 'darkroom-mode)))
+      :action (lambda ()
+                (cond
+                 ((fboundp 'writeroom-mode) (writeroom-mode 'toggle))
+                 ((fboundp 'olivetti-mode) (olivetti-mode 'toggle))
+                 ((fboundp 'darkroom-mode) (darkroom-mode 'toggle))
+                 (t (user-error "No focus mode available")))))
+
+     (init-dwim-make-action
+      :title "Increase focus width"
+      :description "Widen the writing column in focus mode"
+      :category "Focus"
+      :priority 80
+      :predicate (lambda ()
+                   (or (and (boundp 'writeroom-mode) writeroom-mode
+                            (fboundp 'writeroom-increase-width))
+                       (and (boundp 'olivetti-mode) olivetti-mode
+                            (fboundp 'olivetti-expand))))
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'writeroom-mode) writeroom-mode
+                       (fboundp 'writeroom-increase-width))
+                  (writeroom-increase-width))
+                 ((and (fboundp 'olivetti-expand))
+                  (olivetti-expand)))))
+
+     (init-dwim-make-action
+      :title "Decrease focus width"
+      :description "Narrow the writing column in focus mode"
+      :category "Focus"
+      :priority 78
+      :predicate (lambda ()
+                   (or (and (boundp 'writeroom-mode) writeroom-mode
+                            (fboundp 'writeroom-decrease-width))
+                       (and (boundp 'olivetti-mode) olivetti-mode
+                            (fboundp 'olivetti-shrink))))
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'writeroom-mode) writeroom-mode
+                       (fboundp 'writeroom-decrease-width))
+                  (writeroom-decrease-width))
+                 ((fboundp 'olivetti-shrink)
+                  (olivetti-shrink)))))
+
+     (init-dwim-make-action
+      :title "Toggle line numbers"
+      :description "Show or hide line numbers in this buffer"
+      :category "Focus"
+      :priority 70
+      :action (lambda () (display-line-numbers-mode 'toggle)))
+
+     (init-dwim-make-action
+      :title "Toggle visual line mode"
+      :description "Toggle word-wrapped visual lines"
+      :category "Focus"
+      :priority 68
+      :action (lambda () (visual-line-mode 'toggle)))
+
+     (init-dwim-make-action
+      :title "Goal line length"
+      :description "Set fill-column and activate fill-column-indicator"
+      :category "Focus"
+      :priority 60
+      :action (lambda ()
+                (let ((col (read-number "Fill column: " fill-column)))
+                  (setq-local fill-column col)
+                  (when (fboundp 'display-fill-column-indicator-mode)
+                    (display-fill-column-indicator-mode 1))
+                  (message "fill-column set to %d" col)))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -4994,6 +5085,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
         init-dwim-eat-provider
         init-dwim-history-provider
         init-dwim-restclient-provider
+        init-dwim-focus-provider
         init-dwim-emacs-provider))
 
 (provide 'init-dwim)
