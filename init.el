@@ -5357,6 +5357,179 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :predicate (lambda () (fboundp 'sp-select-next-thing))
       :action (lambda () (sp-select-next-thing))))))
 
+;;; ── JSON / YAML ───────────────────────────────────────────────────────────
+
+(defun init-dwim--json-mode-p ()
+  "Return non-nil in JSON buffers."
+  (or (derived-mode-p 'json-mode 'json-ts-mode)
+      (and (buffer-file-name)
+           (string-match-p "\\.json\\'" (buffer-file-name)))))
+
+(defun init-dwim--yaml-mode-p ()
+  "Return non-nil in YAML buffers."
+  (or (derived-mode-p 'yaml-mode 'yaml-ts-mode)
+      (and (buffer-file-name)
+           (string-match-p "\\.ya?ml\\'" (buffer-file-name)))))
+
+(defun init-dwim--json-path-at-point ()
+  "Return a simple dot-notation JSON path for the key at point, or nil.
+Walks up by counting matching braces/brackets — best-effort, not a parser."
+  (save-excursion
+    (let ((keys '()))
+      (condition-case nil
+          (progn
+            (while t
+              (backward-up-list)
+              (let ((ch (char-after)))
+                (cond
+                 ((eq ch ?\{)
+                  ;; look backward for the key that opened this object value
+                  (save-excursion
+                    (backward-sexp)
+                    (when (looking-at "\"\\([^\"]+\\)\"")
+                      (push (match-string 1) keys))))
+                 ((eq ch ?\[)
+                  (push "[]" keys))))))
+        (scan-error nil))
+      (when keys
+        (string-join (nreverse keys) ".")))))
+
+(defun init-dwim-json-yaml-provider ()
+  "Return actions for JSON and YAML buffers."
+  (cond
+   ((init-dwim--json-mode-p)
+    (list
+     (init-dwim-make-action
+      :title "Pretty-print buffer"
+      :description "Format the entire JSON buffer with indentation"
+      :category "JSON"
+      :priority 95
+      :action (lambda ()
+                (json-pretty-print-buffer)
+                (message "JSON pretty-printed")))
+
+     (init-dwim-make-action
+      :title "Minify buffer"
+      :description "Collapse the JSON buffer to a single line"
+      :category "JSON"
+      :priority 85
+      :predicate (lambda () (executable-find "jq"))
+      :action (lambda ()
+                (shell-command-on-region
+                 (point-min) (point-max)
+                 "jq -c ." nil t)
+                (message "JSON minified")))
+
+     (init-dwim-make-action
+      :title "Validate JSON"
+      :description "Check whether the buffer contains valid JSON"
+      :category "JSON"
+      :priority 90
+      :action (lambda ()
+                (condition-case err
+                    (progn
+                      (json-read-from-string
+                       (buffer-substring-no-properties (point-min) (point-max)))
+                      (message "✓ Valid JSON"))
+                  (error (message "✗ Invalid JSON: %s" err)))))
+
+     (init-dwim-make-action
+      :title "Copy JSON path at point"
+      :description "Copy the dot-notation key path for the value at point"
+      :category "JSON"
+      :priority 80
+      :predicate (lambda () (init-dwim--json-path-at-point))
+      :action (lambda ()
+                (let ((path (init-dwim--json-path-at-point)))
+                  (if path
+                      (progn (kill-new path) (message "Copied path: %s" path))
+                    (user-error "Could not determine JSON path")))))
+
+     (init-dwim-make-action
+      :title "jq query on buffer"
+      :description "Run a jq expression and show the result"
+      :category "JSON"
+      :priority 78
+      :predicate (lambda () (executable-find "jq"))
+      :action (lambda ()
+                (let* ((expr (read-string "jq expression: " "."))
+                       (result (shell-command-to-string
+                                (format "echo %s | jq %s"
+                                        (shell-quote-argument
+                                         (buffer-substring-no-properties
+                                          (point-min) (point-max)))
+                                        (shell-quote-argument expr)))))
+                  (with-current-buffer (get-buffer-create "*jq output*")
+                    (erase-buffer)
+                    (insert result)
+                    (json-mode))
+                  (pop-to-buffer "*jq output*"))))
+
+     (init-dwim-make-action
+      :title "Sort JSON keys"
+      :description "Sort all object keys alphabetically"
+      :category "JSON"
+      :priority 70
+      :predicate (lambda () (executable-find "jq"))
+      :action (lambda ()
+                (shell-command-on-region
+                 (point-min) (point-max)
+                 "jq --sort-keys ." nil t)))))
+
+   ((init-dwim--yaml-mode-p)
+    (list
+     (init-dwim-make-action
+      :title "Validate YAML"
+      :description "Check whether the buffer is valid YAML (via python/ruby)"
+      :category "YAML"
+      :priority 90
+      :predicate (lambda () (or (executable-find "python3")
+                                (executable-find "ruby")))
+      :action (lambda ()
+                (let* ((file (or (buffer-file-name)
+                                 (let ((tmp (make-temp-file "dwim-yaml" nil ".yaml")))
+                                   (write-region (point-min) (point-max) tmp)
+                                   tmp)))
+                       (cmd (if (executable-find "python3")
+                                (format "python3 -c \"import yaml,sys; yaml.safe_load(open('%s'))\" && echo OK"
+                                        file)
+                              (format "ruby -ryaml -e \"YAML.load_file('%s'); puts 'OK'\"" file)))
+                       (result (shell-command-to-string cmd)))
+                  (message (if (string-match-p "OK" result)
+                               "✓ Valid YAML"
+                             (concat "✗ " (string-trim result)))))))
+
+     (init-dwim-make-action
+      :title "Convert YAML to JSON"
+      :description "Convert this YAML buffer to JSON and display it"
+      :category "YAML"
+      :priority 80
+      :predicate (lambda () (executable-find "python3"))
+      :action (lambda ()
+                (let* ((yaml-text (buffer-substring-no-properties (point-min) (point-max)))
+                       (result (with-temp-buffer
+                                 (insert yaml-text)
+                                 (shell-command-on-region
+                                  (point-min) (point-max)
+                                  "python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(sys.stdin), indent=2))'"
+                                  nil t)
+                                 (buffer-string))))
+                  (with-current-buffer (get-buffer-create "*yaml→json*")
+                    (erase-buffer)
+                    (insert result)
+                    (when (fboundp 'json-mode) (json-mode)))
+                  (pop-to-buffer "*yaml→json*"))))
+
+     (init-dwim-make-action
+      :title "Indent YAML region"
+      :description "Re-indent the YAML region or buffer"
+      :category "YAML"
+      :priority 75
+      :action (lambda ()
+                (if (use-region-p)
+                    (indent-region (region-beginning) (region-end))
+                  (indent-region (point-min) (point-max)))))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -5384,6 +5557,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
         init-dwim-programming-provider
         init-dwim-diagnostics-provider
         init-dwim-text-provider
+        init-dwim-json-yaml-provider
         init-dwim-project-provider
         init-dwim-buffer-provider
         init-dwim-window-provider
