@@ -995,7 +995,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
      (t
       (user-error "No AI backend available")))))
 
-;;; New helper: smerge detection
 
 (defun init-dwim--in-smerge-conflict-p ()
   "Return non-nil if point is inside a smerge conflict marker."
@@ -1150,7 +1149,56 @@ This function uses a short timeout and performs minimal HTML title extraction."
         :priority 38
         :action (lambda ()
                   (let ((file (read-file-name "Write region to file: ")))
-                    (write-region beg end file))))))))
+                    (write-region beg end file))))
+
+       (init-dwim-make-action
+        :title "Capitalize region"
+        :description "Capitalize every word in the selected region"
+        :category "Region"
+        :priority 48
+        :action (lambda () (capitalize-region beg end)))
+
+       (init-dwim-make-action
+        :title "Base64 encode region"
+        :description "Base64-encode the selected text in place"
+        :category "Region"
+        :priority 35
+        :action (lambda () (base64-encode-region beg end t)))
+
+       (init-dwim-make-action
+        :title "Base64 decode region"
+        :description "Base64-decode the selected text in place"
+        :category "Region"
+        :priority 34
+        :action (lambda () (base64-decode-region beg end)))
+
+       (init-dwim-make-action
+        :title "Pipe region through shell command"
+        :description "Pass region through a shell command, replacing it with output"
+        :category "Region"
+        :priority 58
+        :action (lambda ()
+                  (let ((cmd (read-shell-command "Pipe region through: ")))
+                    (shell-command-on-region beg end cmd nil t))))
+
+       (init-dwim-make-action
+        :title "Align region"
+        :description "Align region to a regexp (align-regexp)"
+        :category "Region"
+        :priority 44
+        :action (lambda () (call-interactively #'align-regexp)))
+
+       (init-dwim-make-action
+        :title "Count pattern occurrences"
+        :description "Count occurrences of a regexp in the region"
+        :category "Region"
+        :priority 32
+        :action (lambda ()
+                  (let ((re (read-regexp "Count occurrences of: "
+                                         (regexp-quote text))))
+                    (message "%d occurrence(s) of %s"
+                             (count-matches re beg end)
+                             re))))))))
 
 ;;; ── URL ───────────────────────────────────────────────────────────────────
 
@@ -1212,7 +1260,45 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :action (lambda ()
                 (let ((dest (read-file-name "Download to: ")))
                   (url-copy-file url dest 1)
-                  (message "Downloaded to %s" dest)))))))
+                  (message "Downloaded to %s" dest))))
+
+     (init-dwim-make-action
+      :title "Copy as Org link with fetched title"
+      :description "Fetch the page title and insert a formatted Org link"
+      :category "URL"
+      :priority 55
+      :predicate (lambda () (fboundp 'url-retrieve-synchronously))
+      :action (lambda ()
+                (let ((buf (url-retrieve-synchronously url t t 5)))
+                  (if (not buf)
+                      (user-error "Could not retrieve URL")
+                    (unwind-protect
+                        (with-current-buffer buf
+                          (goto-char (point-min))
+                          (let* ((case-fold-search t)
+                                 (title (if (re-search-forward
+                                             "<title[^>]*>\\([^<]+\\)</title>"
+                                             nil t)
+                                            (string-trim
+                                             (replace-regexp-in-string
+                                              "[\n\t ]+" " "
+                                              (match-string-no-properties 1)))
+                                          url))
+                                 (link (format "[[%s][%s]]" url title)))
+                            (kill-new link)
+                            (message "Copied Org link: %s" link)))
+                      (kill-buffer buf))))))
+
+     (init-dwim-make-action
+      :title "Open URL in EWW (readable)"
+      :description "Open the URL in EWW and switch to readable mode"
+      :category "URL"
+      :priority 56
+      :predicate (lambda () (fboundp 'eww))
+      :action (lambda ()
+                (eww url)
+                (when (fboundp 'eww-readable)
+                  (run-with-idle-timer 1 nil #'eww-readable)))))))
 
 ;;; ── File path ─────────────────────────────────────────────────────────────
 
@@ -1300,7 +1386,41 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :action (lambda ()
                 (let ((other (read-file-name "Diff against: "
                                              (file-name-directory path))))
-                  (diff path other)))))))
+                  (diff path other))))
+
+     (init-dwim-make-action
+      :title "Open file in other window"
+      :description "Open the file at point in another window"
+      :category "File"
+      :priority 90
+      :action (lambda () (find-file-other-window path)))
+
+     (init-dwim-make-action
+      :title "Rename/move file"
+      :description "Move the file at point to a new name or directory"
+      :category "File"
+      :priority 52
+      :action (lambda ()
+                (let ((dest (read-file-name "Move to: "
+                                            (file-name-directory path)
+                                            nil nil
+                                            (file-name-nondirectory path))))
+                  (rename-file path dest 1)
+                  (message "Moved %s → %s" path dest))))
+
+     (init-dwim-make-action
+      :title "Show file attributes"
+      :description "Display size, modification time, and permissions for the file"
+      :category "File"
+      :priority 30
+      :action (lambda ()
+                (let* ((attrs (file-attributes path))
+                       (size  (nth 7 attrs))
+                       (mtime (format-time-string "%Y-%m-%d %H:%M" (nth 5 attrs)))
+                       (modes (nth 8 attrs)))
+                  (message "%s  size:%d  modified:%s  modes:%s"
+                           (file-name-nondirectory path)
+                           size mtime modes)))))))
 
 ;;; ── Symbol ────────────────────────────────────────────────────────────────
 
@@ -1433,7 +1553,37 @@ This function uses a short timeout and performs minimal HTML title extraction."
                        (ignore-errors (eglot-current-server)))
                   (call-interactively #'eglot-code-actions))
                  (t
-                  (user-error "No LSP code-actions command available"))))))))
+                  (user-error "No LSP code-actions command available")))))
+
+     (init-dwim-make-action
+      :title "Peek hover type"
+      :description "Show type/hover documentation for the symbol at point"
+      :category "Symbol"
+      :priority 59
+      :predicate #'init-dwim--lsp-available-p
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-describe-thing-at-point))
+                  (lsp-describe-thing-at-point))
+                 ((and (fboundp 'eglot-current-server)
+                       (ignore-errors (eglot-current-server))
+                       (fboundp 'eldoc-doc-buffer))
+                  (eldoc-doc-buffer))
+                 (t (user-error "No hover command available")))))
+
+     (init-dwim-make-action
+      :title "Add TODO comment above"
+      :description "Insert a TODO comment at the start of the current defun"
+      :category "Symbol"
+      :priority 40
+      :predicate (lambda () (derived-mode-p 'prog-mode))
+      :action (lambda ()
+                (save-excursion
+                  (beginning-of-defun)
+                  (open-line 1)
+                  (insert
+                   (format "%s TODO: " comment-start))
+                  (end-of-line)))))))
 
 ;;; ── Org ───────────────────────────────────────────────────────────────────
 
@@ -1609,7 +1759,39 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :category "Org"
       :priority 48
       :predicate (lambda () (fboundp 'org-agenda))
-      :action (lambda () (call-interactively #'org-agenda))))))
+      :action (lambda () (call-interactively #'org-agenda)))
+
+     (init-dwim-make-action
+      :title "Evaluate source block"
+      :description "Evaluate the Org Babel source block at point"
+      :category "Org"
+      :priority 86
+      :predicate (lambda () (fboundp 'org-babel-execute-src-block))
+      :action (lambda () (org-babel-execute-src-block)))
+
+     (init-dwim-make-action
+      :title "Tangle file"
+      :description "Tangle all source blocks in this Org file"
+      :category "Org"
+      :priority 60
+      :predicate (lambda () (fboundp 'org-babel-tangle))
+      :action (lambda () (org-babel-tangle)))
+
+     (init-dwim-make-action
+      :title "Toggle heading visibility"
+      :description "Fold or unfold this heading (org-cycle)"
+      :category "Org"
+      :priority 92
+      :predicate (lambda () (fboundp 'org-cycle))
+      :action (lambda () (org-cycle)))
+
+     (init-dwim-make-action
+      :title "Column view"
+      :description "Enter Org column view for this heading"
+      :category "Org"
+      :priority 42
+      :predicate (lambda () (fboundp 'org-columns))
+      :action (lambda () (org-columns))))))
 
 ;;; ── Programming ──────────────────────────────────────────────────────────
 
@@ -1891,7 +2073,78 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :action (lambda ()
                 (init-dwim--ai-send-region
                  (point-min) (point-max)
-                 "Please review this code and suggest improvements:"))))))
+                 "Please review this code and suggest improvements:")))
+
+     (init-dwim-make-action
+      :title "Restart LSP/Eglot server"
+      :description "Reconnect or restart the language server for this buffer"
+      :category "Code"
+      :priority 50
+      :predicate #'init-dwim--lsp-available-p
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-restart-workspace))
+                  (lsp-restart-workspace))
+                 ((and (fboundp 'eglot-current-server)
+                       (ignore-errors (eglot-current-server)))
+                  (call-interactively #'eglot-reconnect))
+                 (t (user-error "No LSP server active")))))
+
+     (init-dwim-make-action
+      :title "Show hover documentation"
+      :description "Show LSP hover documentation for symbol at point"
+      :category "Code"
+      :priority 77
+      :predicate #'init-dwim--lsp-available-p
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-describe-thing-at-point))
+                  (lsp-describe-thing-at-point))
+                 ((fboundp 'eldoc-doc-buffer)
+                  (eldoc-doc-buffer))
+                 (t (user-error "No hover command available")))))
+
+     (init-dwim-make-action
+      :title "Run current file"
+      :description "Execute the current file with the appropriate interpreter"
+      :category "Code"
+      :priority 60
+      :predicate (lambda ()
+                   (or (derived-mode-p 'python-mode)
+                       (derived-mode-p 'ruby-mode)
+                       (derived-mode-p 'js-mode 'typescript-mode)
+                       (derived-mode-p 'sh-mode)
+                       (derived-mode-p 'emacs-lisp-mode)))
+      :action (lambda ()
+                (let ((f (buffer-file-name)))
+                  (unless f (user-error "Buffer is not visiting a file"))
+                  (cond
+                   ((derived-mode-p 'python-mode)
+                    (compile (format "python3 %s" (shell-quote-argument f))))
+                   ((derived-mode-p 'ruby-mode)
+                    (compile (format "ruby %s" (shell-quote-argument f))))
+                   ((derived-mode-p 'js-mode 'typescript-mode)
+                    (compile (format "node %s" (shell-quote-argument f))))
+                   ((derived-mode-p 'sh-mode)
+                    (compile (format "bash %s" (shell-quote-argument f))))
+                   ((derived-mode-p 'emacs-lisp-mode)
+                    (load-file f))
+                   (t (user-error "No runner for %s" major-mode))))))
+
+     (init-dwim-make-action
+      :title "Add missing import (LSP)"
+      :description "Trigger LSP code action to add missing import"
+      :category "Code"
+      :priority 76
+      :predicate #'init-dwim--lsp-available-p
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-execute-code-action))
+                  (lsp-execute-code-action "source.addMissingImports"))
+                 ((and (fboundp 'eglot-code-actions)
+                       (ignore-errors (eglot-current-server)))
+                  (eglot-code-actions nil nil "source.addMissingImports"))
+                 (t (user-error "No LSP import action available"))))))))
 
 ;;; ── Text / Markdown ───────────────────────────────────────────────────────
 
@@ -2115,132 +2368,235 @@ This function uses a short timeout and performs minimal HTML title extraction."
         :category "Dired"
         :priority 55
         :predicate (lambda () (fboundp 'wdired-change-to-wdired-mode))
-        :action (lambda () (wdired-change-to-wdired-mode)))))))
+        :action (lambda () (wdired-change-to-wdired-mode)))
+
+       (init-dwim-make-action
+        :title "Sort by date / name / size"
+        :description "Toggle or change Dired sort order"
+        :category "Dired"
+        :priority 50
+        :predicate (lambda () (fboundp 'dired-sort-toggle-or-edit))
+        :action (lambda () (dired-sort-toggle-or-edit)))
+
+       (init-dwim-make-action
+        :title "Create directory"
+        :description "Create a new subdirectory here"
+        :category "Dired"
+        :priority 48
+        :predicate (lambda () (fboundp 'dired-create-directory))
+        :action (lambda () (call-interactively #'dired-create-directory)))
+
+       (init-dwim-make-action
+        :title "Ediff marked files"
+        :description "Open Ediff on two marked Dired files"
+        :category "Dired"
+        :priority 45
+        :predicate (lambda () (fboundp 'ediff-files))
+        :action (lambda ()
+                  (let ((files (dired-get-marked-files)))
+                    (if (= (length files) 2)
+                        (ediff-files (car files) (cadr files))
+                      (user-error "Mark exactly two files for ediff")))))
+
+       (init-dwim-make-action
+        :title "Create symlink"
+        :description "Create a symbolic link to the file at point"
+        :category "Dired"
+        :priority 42
+        :predicate (lambda () (fboundp 'dired-do-symlink))
+        :action (lambda () (call-interactively #'dired-do-symlink)))))))
 
 ;;; ── Magit ─────────────────────────────────────────────────────────────────
 
 (defun init-dwim-magit-provider ()
-  "Return actions relevant to Magit buffers."
-  (when (derived-mode-p 'magit-mode)
-    (list
-     (init-dwim-make-action
-      :title "Stage item"
-      :description "Stage item at point"
-      :category "Magit"
-      :priority 100
-      :predicate (lambda () (fboundp 'magit-stage))
-      :action (lambda () (call-interactively #'magit-stage)))
+  "Return actions relevant to Magit buffers, plus always-available Magit entry points."
+  (let ((in-magit (derived-mode-p 'magit-mode)))
+    (append
+     ;; ── Always-available Magit entry points (moved from personal-provider) ─
+     (list
+      (init-dwim-make-action
+       :title "Magit status"
+       :description "Open Magit for the current repository"
+       :category "Git"
+       :priority 100
+       :predicate (lambda () (fboundp 'magit-status))
+       :action (lambda () (call-interactively #'magit-status)))
 
-     (init-dwim-make-action
-      :title "Unstage item"
-      :description "Unstage item at point"
-      :category "Magit"
-      :priority 98
-      :predicate (lambda () (fboundp 'magit-unstage))
-      :action (lambda () (call-interactively #'magit-unstage)))
+      (init-dwim-make-action
+       :title "Magit project status"
+       :description "Open Magit at the current project root"
+       :category "Git"
+       :priority 98
+       :predicate (lambda ()
+                    (and (fboundp 'magit-status)
+                         (fboundp 'project-current)
+                         (project-current nil)))
+       :action (lambda ()
+                 (magit-status (project-root (project-current t)))))
 
-     (init-dwim-make-action
-      :title "Commit"
-      :description "Create a Git commit"
-      :category "Magit"
-      :priority 90
-      :predicate (lambda () (fboundp 'magit-commit-create))
-      :action (lambda () (call-interactively #'magit-commit-create)))
+      (init-dwim-make-action
+       :title "Magit dispatch"
+       :description "Open Magit transient dispatch"
+       :category "Git"
+       :priority 92
+       :predicate (lambda () (fboundp 'magit-dispatch))
+       :action (lambda () (call-interactively #'magit-dispatch)))
 
-     (init-dwim-make-action
-      :title "Push"
-      :description "Push changes"
-      :category "Magit"
-      :priority 85
-      :predicate (lambda () (fboundp 'magit-push))
-      :action (lambda () (call-interactively #'magit-push)))
+      (init-dwim-make-action
+       :title "Magit file dispatch"
+       :description "Open Magit actions for the current file"
+       :category "Git"
+       :priority 88
+       :predicate (lambda ()
+                    (and buffer-file-name (fboundp 'magit-file-dispatch)))
+       :action (lambda () (call-interactively #'magit-file-dispatch)))
 
-     (init-dwim-make-action
-      :title "Pull"
-      :description "Pull changes"
-      :category "Magit"
-      :priority 84
-      :predicate (lambda () (fboundp 'magit-pull))
-      :action (lambda () (call-interactively #'magit-pull)))
+      (init-dwim-make-action
+       :title "Magit blame"
+       :description "Show git blame annotations for the current file"
+       :category "Git"
+       :priority 82
+       :predicate (lambda ()
+                    (and buffer-file-name (fboundp 'magit-blame-addition)))
+       :action (lambda () (call-interactively #'magit-blame-addition))))
 
-     (init-dwim-make-action
-      :title "Show diff"
-      :description "Show diff for item at point"
-      :category "Magit"
-      :priority 82
-      :predicate (lambda () (fboundp 'magit-diff-dwim))
-      :action (lambda () (call-interactively #'magit-diff-dwim)))
+     ;; ── Magit-buffer-specific actions ──────────────────────────────────────
+     (when in-magit
+       (list
+        (init-dwim-make-action
+         :title "Stage item"
+         :description "Stage item at point"
+         :category "Magit"
+         :priority 100
+         :predicate (lambda () (fboundp 'magit-stage))
+         :action (lambda () (call-interactively #'magit-stage)))
 
-     (init-dwim-make-action
-      :title "Copy commit hash"
-      :description "Copy commit hash at point"
-      :category "Magit"
-      :priority 80
-      :predicate (lambda ()
-                   (and (fboundp 'magit-thing-at-point)
-                        (magit-thing-at-point 'git-revision t)))
-      :action (lambda ()
-                (let ((rev (magit-thing-at-point 'git-revision t)))
-                  (kill-new rev)
-                  (message "Copied revision: %s" rev))))
+        (init-dwim-make-action
+         :title "Unstage item"
+         :description "Unstage item at point"
+         :category "Magit"
+         :priority 98
+         :predicate (lambda () (fboundp 'magit-unstage))
+         :action (lambda () (call-interactively #'magit-unstage)))
 
-     ;; ── New Magit actions ───────────────────────────────────────────────
+        (init-dwim-make-action
+         :title "Commit"
+         :description "Create a Git commit"
+         :category "Magit"
+         :priority 90
+         :predicate (lambda () (fboundp 'magit-commit-create))
+         :action (lambda () (call-interactively #'magit-commit-create)))
 
-     (init-dwim-make-action
-      :title "Create branch"
-      :description "Create and checkout a new Git branch"
-      :category "Magit"
-      :priority 75
-      :predicate (lambda () (fboundp 'magit-branch-create))
-      :action (lambda () (call-interactively #'magit-branch-create)))
+        (init-dwim-make-action
+         :title "Push"
+         :description "Push changes"
+         :category "Magit"
+         :priority 85
+         :predicate (lambda () (fboundp 'magit-push))
+         :action (lambda () (call-interactively #'magit-push)))
 
-     (init-dwim-make-action
-      :title "Checkout branch"
-      :description "Checkout an existing branch"
-      :category "Magit"
-      :priority 74
-      :predicate (lambda () (fboundp 'magit-checkout))
-      :action (lambda () (call-interactively #'magit-checkout)))
+        (init-dwim-make-action
+         :title "Pull"
+         :description "Pull changes"
+         :category "Magit"
+         :priority 84
+         :predicate (lambda () (fboundp 'magit-pull))
+         :action (lambda () (call-interactively #'magit-pull)))
 
-     (init-dwim-make-action
-      :title "Stash changes"
-      :description "Stash current working tree changes"
-      :category "Magit"
-      :priority 72
-      :predicate (lambda () (fboundp 'magit-stash))
-      :action (lambda () (call-interactively #'magit-stash)))
+        (init-dwim-make-action
+         :title "Show diff"
+         :description "Show diff for item at point"
+         :category "Magit"
+         :priority 82
+         :predicate (lambda () (fboundp 'magit-diff-dwim))
+         :action (lambda () (call-interactively #'magit-diff-dwim)))
 
-     (init-dwim-make-action
-      :title "Pop stash"
-      :description "Apply and drop the top stash"
-      :category "Magit"
-      :priority 71
-      :predicate (lambda () (fboundp 'magit-stash-pop))
-      :action (lambda () (call-interactively #'magit-stash-pop)))
+        (init-dwim-make-action
+         :title "Copy commit hash"
+         :description "Copy commit hash at point"
+         :category "Magit"
+         :priority 80
+         :predicate (lambda ()
+                      (and (fboundp 'magit-thing-at-point)
+                           (magit-thing-at-point 'git-revision t)))
+         :action (lambda ()
+                   (let ((rev (magit-thing-at-point 'git-revision t)))
+                     (kill-new rev)
+                     (message "Copied revision: %s" rev))))
 
-     (init-dwim-make-action
-      :title "Rebase"
-      :description "Start an interactive rebase"
-      :category "Magit"
-      :priority 70
-      :predicate (lambda () (fboundp 'magit-rebase))
-      :action (lambda () (call-interactively #'magit-rebase)))
+        ;; ── New Magit actions ───────────────────────────────────────────────
 
-     (init-dwim-make-action
-      :title "Cherry pick"
-      :description "Cherry-pick commit at point"
-      :category "Magit"
-      :priority 68
-      :predicate (lambda () (fboundp 'magit-cherry-pick))
-      :action (lambda () (call-interactively #'magit-cherry-pick)))
+        (init-dwim-make-action
+         :title "Create branch"
+         :description "Create and checkout a new Git branch"
+         :category "Magit"
+         :priority 75
+         :predicate (lambda () (fboundp 'magit-branch-create))
+         :action (lambda () (call-interactively #'magit-branch-create)))
 
-     (init-dwim-make-action
-      :title "Show log"
-      :description "Open the Magit log"
-      :category "Magit"
-      :priority 65
-      :predicate (lambda () (fboundp 'magit-log-current))
-      :action (lambda () (magit-log-current nil))))))
+        (init-dwim-make-action
+         :title "Checkout branch"
+         :description "Checkout an existing branch"
+         :category "Magit"
+         :priority 74
+         :predicate (lambda () (fboundp 'magit-checkout))
+         :action (lambda () (call-interactively #'magit-checkout)))
+
+        (init-dwim-make-action
+         :title "Stash changes"
+         :description "Stash current working tree changes"
+         :category "Magit"
+         :priority 72
+         :predicate (lambda () (fboundp 'magit-stash))
+         :action (lambda () (call-interactively #'magit-stash)))
+
+        (init-dwim-make-action
+         :title "Pop stash"
+         :description "Apply and drop the top stash"
+         :category "Magit"
+         :priority 71
+         :predicate (lambda () (fboundp 'magit-stash-pop))
+         :action (lambda () (call-interactively #'magit-stash-pop)))
+
+        (init-dwim-make-action
+         :title "Rebase"
+         :description "Start an interactive rebase"
+         :category "Magit"
+         :priority 70
+         :predicate (lambda () (fboundp 'magit-rebase))
+         :action (lambda () (call-interactively #'magit-rebase)))
+
+        (init-dwim-make-action
+         :title "Cherry pick"
+         :description "Cherry-pick commit at point"
+         :category "Magit"
+         :priority 68
+         :predicate (lambda () (fboundp 'magit-cherry-pick))
+         :action (lambda () (call-interactively #'magit-cherry-pick)))
+
+        (init-dwim-make-action
+         :title "Show log"
+         :description "Open the Magit log"
+         :category "Magit"
+         :priority 65
+         :predicate (lambda () (fboundp 'magit-log-current))
+         :action (lambda () (magit-log-current nil)))
+
+        (init-dwim-make-action
+         :title "Fetch"
+         :description "Fetch from a remote"
+         :category "Magit"
+         :priority 78
+         :predicate (lambda () (fboundp 'magit-fetch))
+         :action (lambda () (call-interactively #'magit-fetch)))
+
+        (init-dwim-make-action
+         :title "Amend last commit"
+         :description "Amend the most recent commit"
+         :category "Magit"
+         :priority 76
+         :predicate (lambda () (fboundp 'magit-commit-amend))
+         :action (lambda () (call-interactively #'magit-commit-amend))))))))
 
 ;;; ── Project ───────────────────────────────────────────────────────────────
 
@@ -2537,7 +2893,41 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :category "Buffer"
     :priority 32
     :predicate #'init-dwim--buffer-file-p
-    :action (lambda () (find-file-other-window (buffer-file-name))))))
+    :action (lambda () (find-file-other-window (buffer-file-name))))
+
+   (init-dwim-make-action
+    :title "Switch to buffer"
+    :description "Switch to another buffer by name"
+    :category "Buffer"
+    :priority 92
+    :action (lambda ()
+              (if (fboundp 'consult-buffer)
+                  (consult-buffer)
+                (call-interactively #'switch-to-buffer))))
+
+   (init-dwim-make-action
+    :title "Kill all unmodified buffers"
+    :description "Kill every buffer that has no unsaved changes"
+    :category "Buffer"
+    :priority 25
+    :action (lambda ()
+              (when (yes-or-no-p "Kill all unmodified buffers? ")
+                (let ((count 0))
+                  (dolist (buf (buffer-list))
+                    (unless (or (buffer-modified-p buf)
+                                (get-buffer-process buf)
+                                (string-prefix-p " " (buffer-name buf)))
+                      (kill-buffer buf)
+                      (cl-incf count)))
+                  (message "Killed %d buffer(s)" count)))))
+
+   (init-dwim-make-action
+    :title "Diff buffer against file"
+    :description "Show what has changed since the last save"
+    :category "Buffer"
+    :priority 36
+    :predicate #'init-dwim--buffer-file-p
+    :action (lambda () (diff-buffer-with-file (current-buffer))))))
 
 ;;; ── Window (NEW) ──────────────────────────────────────────────────────────
 
@@ -2609,6 +2999,56 @@ This function uses a short timeout and performs minimal HTML title extraction."
                 (cl-loop for win in wins
                          for buf in (append (cdr bufs) (list (car bufs)))
                          do (set-window-buffer win buf)))))
+
+   ;; ── Window navigation (moved from personal-provider) ───────────────────
+
+   (init-dwim-make-action
+    :title "Other window"
+    :description "Move focus to the next window"
+    :category "Window"
+    :priority 90
+    :predicate (lambda () (> (count-windows) 1))
+    :action (lambda () (other-window 1)))
+
+   (init-dwim-make-action
+    :title "Previous window"
+    :description "Move focus to the previous window"
+    :category "Window"
+    :priority 89
+    :predicate (lambda () (> (count-windows) 1))
+    :action (lambda () (other-window -1)))
+
+   (init-dwim-make-action
+    :title "Windmove left"
+    :description "Move to the window on the left"
+    :category "Window"
+    :priority 86
+    :predicate (lambda () (fboundp 'windmove-left))
+    :action (lambda () (windmove-left)))
+
+   (init-dwim-make-action
+    :title "Windmove right"
+    :description "Move to the window on the right"
+    :category "Window"
+    :priority 85
+    :predicate (lambda () (fboundp 'windmove-right))
+    :action (lambda () (windmove-right)))
+
+   (init-dwim-make-action
+    :title "Windmove up"
+    :description "Move to the window above"
+    :category "Window"
+    :priority 84
+    :predicate (lambda () (fboundp 'windmove-up))
+    :action (lambda () (windmove-up)))
+
+   (init-dwim-make-action
+    :title "Windmove down"
+    :description "Move to the window below"
+    :category "Window"
+    :priority 83
+    :predicate (lambda () (fboundp 'windmove-down))
+    :action (lambda () (windmove-down)))
 
    (init-dwim-make-action
     :title "Move buffer to new frame"
@@ -2968,7 +3408,23 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :description "Enable or disable Evil-mode in this buffer"
       :category "Evil"
       :priority 40
-      :action (lambda () (evil-mode 'toggle))))))
+      :action (lambda () (evil-mode 'toggle)))
+
+     (init-dwim-make-action
+      :title "Set mark"
+      :description "Set an Evil mark at point (prompted for register)"
+      :category "Evil"
+      :priority 65
+      :predicate (lambda () (fboundp 'evil-set-marker))
+      :action (lambda () (call-interactively #'evil-set-marker)))
+
+     (init-dwim-make-action
+      :title "Join lines"
+      :description "Join the current line with the line below (Evil J)"
+      :category "Evil"
+      :priority 62
+      :predicate (lambda () (fboundp 'evil-join))
+      :action (lambda () (call-interactively #'evil-join))))))
 
 ;;; ── AI (NEW) ──────────────────────────────────────────────────────────────
 
@@ -3041,9 +3497,66 @@ This function uses a short timeout and performs minimal HTML title extraction."
                   (let* ((beg (point))
                          (end (save-excursion (end-of-defun) (point)))
                          (prompt "Write a concise docstring for this function:"))
-                    (init-dwim--ai-send-region beg end prompt))))))))
+                    (init-dwim--ai-send-region beg end prompt)))))
 
-;;; ── Output / compilation buffers (NEW) ───────────────────────────────────
+     (init-dwim-make-action
+      :title "AI: write unit tests for defun"
+      :description "Ask AI to generate unit tests for the function at point"
+      :category "AI"
+      :priority 55
+      :predicate (lambda () (derived-mode-p 'prog-mode))
+      :action (lambda ()
+                (save-excursion
+                  (beginning-of-defun)
+                  (let* ((beg (point))
+                         (end (save-excursion (end-of-defun) (point)))
+                         (prompt (format "Write unit tests for this %s function:"
+                                         major-mode)))
+                    (init-dwim--ai-send-region beg end prompt)))))
+
+     (init-dwim-make-action
+      :title "AI: explain error in *Messages*"
+      :description "Send the last error message to AI for an explanation"
+      :category "AI"
+      :priority 56
+      :action (lambda ()
+                (let* ((msgs (with-current-buffer "*Messages*"
+                               (buffer-substring-no-properties
+                                (max (point-min) (- (point-max) 1000))
+                                (point-max))))
+                       (prompt "Explain this Emacs error and how to fix it:"))
+                  (init-dwim--ai-send-region
+                   (with-current-buffer "*Messages*"
+                     (max (point-min) (- (point-max) 1000)))
+                   (with-current-buffer "*Messages*" (point-max))
+                   prompt)
+                  (ignore msgs))))
+
+     (init-dwim-make-action
+      :title "AI: suggest commit message"
+      :description "Ask AI to write a commit message from the staged diff"
+      :category "AI"
+      :priority 54
+      :predicate (lambda ()
+                   (and (fboundp 'magit-git-string)
+                        (init-dwim--project-root)))
+      :action (lambda ()
+                (let* ((diff (shell-command-to-string
+                              (format "git -C %s diff --cached"
+                                      (shell-quote-argument
+                                       (init-dwim--project-root)))))
+                       (prompt "Write a concise git commit message for this diff:"))
+                  (if (string-empty-p (string-trim diff))
+                      (user-error "No staged changes to generate a message for")
+                    (let ((buf (get-buffer-create "*init-dwim-gptel*")))
+                      (with-current-buffer buf
+                        (unless (eq major-mode 'org-mode) (org-mode))
+                        (goto-char (point-max))
+                        (insert "\n" prompt "\n\n#+begin_src diff\n" diff "#+end_src\n"))
+                      (pop-to-buffer buf)
+                      (when (fboundp 'gptel-send) (gptel-send))))))))))
+
+;;; ── Output / compilation buffers
 
 (defun init-dwim-output-buffer-provider ()
   "Return actions relevant to grep, compilation, and xref result buffers."
@@ -3431,7 +3944,20 @@ This function uses a short timeout and performs minimal HTML title extraction."
                  ((derived-mode-p 'prog-mode) (narrow-to-defun))
                  ((use-region-p)
                   (narrow-to-region (region-beginning) (region-end)))
-                 (t (narrow-to-page))))))))
+                 (t (narrow-to-page))))))
+
+   (init-dwim-make-action
+    :title "Indirect buffer to region"
+    :description "Open a new indirect buffer showing only the selected region"
+    :category "Narrow"
+    :priority 68
+    :predicate #'init-dwim--region-active-p
+    :action (lambda ()
+              (let ((beg (region-beginning))
+                    (end (region-end)))
+                (clone-indirect-buffer nil t)
+                (narrow-to-region beg end)
+                (message "Indirect buffer narrowed to region"))))))
 
 ;;; ── Shell / terminal (NEW) ────────────────────────────────────────────────
 
@@ -3499,7 +4025,33 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :priority 50
     :action (lambda ()
               (let ((cmd (read-shell-command "Insert output of: ")))
-                (insert (shell-command-to-string cmd)))))))
+                (insert (shell-command-to-string cmd)))))
+
+   (init-dwim-make-action
+    :title "Run make target"
+    :description "Choose and run a target from the project Makefile"
+    :category "Shell"
+    :priority 63
+    :predicate (lambda ()
+                 (let ((mk (and (init-dwim--project-root)
+                                (expand-file-name "Makefile"
+                                                  (init-dwim--project-root)))))
+                   (and mk (file-exists-p mk))))
+    :action (lambda ()
+              (let* ((root (init-dwim--project-root))
+                     (mk (expand-file-name "Makefile" root))
+                     (targets
+                      (with-temp-buffer
+                        (call-process "make" nil t nil "-qp" "-f" mk)
+                        (let (ts)
+                          (goto-char (point-min))
+                          (while (re-search-forward "^\\([a-zA-Z0-9_%-]+\\):" nil t)
+                            (push (match-string 1) ts))
+                          (delete-dups (nreverse ts)))))
+                     (target (completing-read "Make target: " targets nil t)))
+                (compile (format "make -C %s %s"
+                                 (shell-quote-argument root)
+                                 (shell-quote-argument target))))))))
 
 ;;; ── Emacs meta-actions (NEW) ──────────────────────────────────────────────
 
@@ -3589,12 +4141,44 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :category "Emacs"
     :priority 20
     :action (lambda ()
-              (message "GC freed %s" (garbage-collect))))))
+              (message "GC freed %s" (garbage-collect))))
 
-(defun init-dwim-personal-provider ()
-  "Personal always-available DWIM actions."
+   (init-dwim-make-action
+    :title "Toggle theme"
+    :description "Load a different color theme interactively"
+    :category "Emacs"
+    :priority 25
+    :action (lambda ()
+              (let ((theme (intern
+                            (completing-read "Load theme: "
+                                             (mapcar #'symbol-name
+                                                     (custom-available-themes))))))
+                (mapc #'disable-theme custom-enabled-themes)
+                (load-theme theme t)
+                (message "Loaded theme: %s" theme))))
+
+   (init-dwim-make-action
+    :title "Open recent file"
+    :description "Visit a recently opened file"
+    :category "Emacs"
+    :priority 45
+    :predicate (lambda () (or (fboundp 'consult-recent-file)
+                              (fboundp 'recentf-open-files)))
+    :action (lambda ()
+              (if (fboundp 'consult-recent-file)
+                  (consult-recent-file)
+                (recentf-open-files))))
+
+   (init-dwim-make-action
+    :title "Evaluate expression"
+    :description "Evaluate an Elisp expression (M-:)"
+    :category "Emacs"
+    :priority 42
+    :action (lambda () (call-interactively #'eval-expression)))))
+
+(defun init-dwim-session-provider ()
+  "Always-available session-level DWIM actions."
   (list
-   ;; Emacs/session actions
    (init-dwim-make-action
     :title "Save buffers and quit Emacs"
     :description "Run `save-buffers-kill-terminal'"
@@ -3612,57 +4196,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :action (lambda ()
               (call-interactively #'restart-emacs)))
 
-   ;; Window navigation
-   (init-dwim-make-action
-    :title "Other window"
-    :description "Move focus to the next window"
-    :category "Window"
-    :priority 90
-    :predicate (lambda () (> (count-windows) 1))
-    :action (lambda ()
-              (other-window 1)))
-
-   (init-dwim-make-action
-    :title "Previous window"
-    :description "Move focus to the previous window"
-    :category "Window"
-    :priority 89
-    :predicate (lambda () (> (count-windows) 1))
-    :action (lambda ()
-              (other-window -1)))
-
-   (init-dwim-make-action
-    :title "Windmove left"
-    :description "Move to the window on the left"
-    :category "Window"
-    :priority 86
-    :predicate (lambda () (fboundp 'windmove-left))
-    :action (lambda () (windmove-left)))
-
-   (init-dwim-make-action
-    :title "Windmove right"
-    :description "Move to the window on the right"
-    :category "Window"
-    :priority 85
-    :predicate (lambda () (fboundp 'windmove-right))
-    :action (lambda () (windmove-right)))
-
-   (init-dwim-make-action
-    :title "Windmove up"
-    :description "Move to the window above"
-    :category "Window"
-    :priority 84
-    :predicate (lambda () (fboundp 'windmove-up))
-    :action (lambda () (windmove-up)))
-
-   (init-dwim-make-action
-    :title "Windmove down"
-    :description "Move to the window below"
-    :category "Window"
-    :priority 83
-    :predicate (lambda () (fboundp 'windmove-down))
-    :action (lambda () (windmove-down)))
-
    (init-dwim-make-action
     :title "Explain DWIM actions"
     :description "Show why DWIM actions are available or filtered out"
@@ -3670,66 +4203,445 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :priority 120
     :predicate (lambda () (fboundp 'init-dwim-explain))
     :action (lambda ()
-              (call-interactively #'init-dwim-explain)))
+              (call-interactively #'init-dwim-explain)))))
 
-   ;; Magit entrypoints
+;;; ── Git gutter (NEW) ──────────────────────────────────────────────────────
+
+(defun init-dwim-git-gutter-provider ()
+  "Return git-gutter hunk actions when git-gutter-mode is active."
+  (when (bound-and-true-p git-gutter-mode)
+    (list
+     (init-dwim-make-action
+      :title "Next hunk"
+      :description "Jump to the next git-gutter hunk"
+      :category "GitGutter"
+      :priority 90
+      :predicate (lambda () (fboundp 'git-gutter:next-hunk))
+      :action (lambda () (git-gutter:next-hunk 1)))
+
+     (init-dwim-make-action
+      :title "Previous hunk"
+      :description "Jump to the previous git-gutter hunk"
+      :category "GitGutter"
+      :priority 88
+      :predicate (lambda () (fboundp 'git-gutter:previous-hunk))
+      :action (lambda () (git-gutter:previous-hunk 1)))
+
+     (init-dwim-make-action
+      :title "Stage hunk"
+      :description "Stage the hunk at point via git-gutter"
+      :category "GitGutter"
+      :priority 85
+      :predicate (lambda () (fboundp 'git-gutter:stage-hunk))
+      :action (lambda () (git-gutter:stage-hunk)))
+
+     (init-dwim-make-action
+      :title "Revert hunk"
+      :description "Revert the hunk at point to the HEAD version"
+      :category "GitGutter"
+      :priority 80
+      :predicate (lambda () (fboundp 'git-gutter:revert-hunk))
+      :action (lambda () (git-gutter:revert-hunk)))
+
+     (init-dwim-make-action
+      :title "Popup diff for hunk"
+      :description "Show the diff popup for the hunk at point"
+      :category "GitGutter"
+      :priority 75
+      :predicate (lambda () (fboundp 'git-gutter:popup-hunk))
+      :action (lambda () (git-gutter:popup-hunk))))))
+
+;;; ── Comint / process buffers (NEW) ────────────────────────────────────────
+
+(defun init-dwim-comint-provider ()
+  "Return actions relevant to comint/process buffers."
+  (when (derived-mode-p 'comint-mode)
+    (list
+     (init-dwim-make-action
+      :title "Clear process output"
+      :description "Erase all output in the comint buffer"
+      :category "Comint"
+      :priority 80
+      :predicate (lambda () (fboundp 'comint-clear-buffer))
+      :action (lambda () (comint-clear-buffer)))
+
+     (init-dwim-make-action
+      :title "Send input"
+      :description "Send the current input line to the process"
+      :category "Comint"
+      :priority 95
+      :action (lambda () (comint-send-input)))
+
+     (init-dwim-make-action
+      :title "Interrupt process"
+      :description "Send interrupt (C-c) to the running process"
+      :category "Comint"
+      :priority 90
+      :predicate (lambda () (fboundp 'comint-interrupt-subjob))
+      :action (lambda () (comint-interrupt-subjob)))
+
+     (init-dwim-make-action
+      :title "Kill process"
+      :description "Kill the process running in this buffer"
+      :category "Comint"
+      :priority 70
+      :predicate (lambda () (get-buffer-process (current-buffer)))
+      :action (lambda ()
+                (kill-process (get-buffer-process (current-buffer)))
+                (message "Process killed")))
+
+     (init-dwim-make-action
+      :title "Copy last output"
+      :description "Copy the most recent process output to the kill ring"
+      :category "Comint"
+      :priority 60
+      :action (lambda ()
+                (save-excursion
+                  (let* ((end (point-max))
+                         (beg (save-excursion
+                                (goto-char end)
+                                (comint-previous-prompt 1)
+                                (forward-line 1)
+                                (point))))
+                    (kill-new (buffer-substring-no-properties beg end))
+                    (message "Last output copied")))))
+
+     (init-dwim-make-action
+      :title "Search input history"
+      :description "Search comint input history with isearch"
+      :category "Comint"
+      :priority 55
+      :predicate (lambda () (fboundp 'comint-history-isearch-backward))
+      :action (lambda () (comint-history-isearch-backward))))))
+
+;;; ── Xref navigation (NEW) ─────────────────────────────────────────────────
+
+(defun init-dwim-xref-provider ()
+  "Return xref navigation history actions in programming buffers."
+  (when (derived-mode-p 'prog-mode)
+    (list
+     (init-dwim-make-action
+      :title "Xref go back"
+      :description "Go back to the previous xref location"
+      :category "Xref"
+      :priority 85
+      :predicate (lambda () (fboundp 'xref-go-back))
+      :action (lambda () (xref-go-back)))
+
+     (init-dwim-make-action
+      :title "Xref go forward"
+      :description "Go forward to the next xref location"
+      :category "Xref"
+      :priority 83
+      :predicate (lambda () (fboundp 'xref-go-forward))
+      :action (lambda () (xref-go-forward)))
+
+     (init-dwim-make-action
+      :title "Find definitions in project"
+      :description "Find all definitions of a symbol across the project"
+      :category "Xref"
+      :priority 78
+      :predicate (lambda () (fboundp 'xref-find-definitions))
+      :action (lambda ()
+                (let ((sym (read-string "Find definitions of: "
+                                        (init-dwim--symbol-string))))
+                  (xref-find-definitions sym))))
+
+     (init-dwim-make-action
+      :title "Find apropos"
+      :description "Find symbols matching a pattern via xref-find-apropos"
+      :category "Xref"
+      :priority 70
+      :predicate (lambda () (fboundp 'xref-find-apropos))
+      :action (lambda () (call-interactively #'xref-find-apropos))))))
+
+;;; ── Diagnostics (NEW) ─────────────────────────────────────────────────────
+
+(defun init-dwim-diagnostics-provider ()
+  "Return diagnostic actions when flycheck or flymake is active."
+  (when (or (and (boundp 'flycheck-mode) flycheck-mode)
+            (and (boundp 'flymake-mode) flymake-mode))
+    (list
+     (init-dwim-make-action
+      :title "List all errors"
+      :description "Show the full diagnostic list for this buffer"
+      :category "Diagnostics"
+      :priority 90
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'flycheck-mode) flycheck-mode
+                       (fboundp 'flycheck-list-errors))
+                  (flycheck-list-errors))
+                 ((and (boundp 'flymake-mode) flymake-mode
+                       (fboundp 'flymake-show-buffer-diagnostics))
+                  (flymake-show-buffer-diagnostics))
+                 (t (user-error "No diagnostic list available")))))
+
+     (init-dwim-make-action
+      :title "Next error"
+      :description "Jump to the next diagnostic error"
+      :category "Diagnostics"
+      :priority 88
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'flycheck-mode) flycheck-mode
+                       (fboundp 'flycheck-next-error))
+                  (flycheck-next-error))
+                 ((and (boundp 'flymake-mode) flymake-mode
+                       (fboundp 'flymake-goto-next-error))
+                  (flymake-goto-next-error))
+                 (t (next-error)))))
+
+     (init-dwim-make-action
+      :title "Previous error"
+      :description "Jump to the previous diagnostic error"
+      :category "Diagnostics"
+      :priority 86
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'flycheck-mode) flycheck-mode
+                       (fboundp 'flycheck-previous-error))
+                  (flycheck-previous-error))
+                 ((and (boundp 'flymake-mode) flymake-mode
+                       (fboundp 'flymake-goto-prev-error))
+                  (flymake-goto-prev-error))
+                 (t (previous-error)))))
+
+     (init-dwim-make-action
+      :title "Clear diagnostics"
+      :description "Dismiss all current diagnostic overlays"
+      :category "Diagnostics"
+      :priority 60
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'flycheck-mode) flycheck-mode
+                       (fboundp 'flycheck-clear))
+                  (flycheck-clear))
+                 ((and (boundp 'flymake-mode) flymake-mode
+                       (fboundp 'flymake-start))
+                  ;; flymake has no clear; restart to reset overlays
+                  (flymake-start t))
+                 (t (user-error "No clear command available")))))
+
+     (init-dwim-make-action
+      :title "Toggle checker"
+      :description "Enable or disable the active checker in this buffer"
+      :category "Diagnostics"
+      :priority 55
+      :action (lambda ()
+                (cond
+                 ((and (boundp 'flycheck-mode) flycheck-mode
+                       (fboundp 'flycheck-mode))
+                  (flycheck-mode 'toggle))
+                 ((fboundp 'flymake-mode)
+                  (flymake-mode 'toggle)))))
+
+     (init-dwim-make-action
+      :title "Explain error at point"
+      :description "Show a detailed explanation of the diagnostic at point"
+      :category "Diagnostics"
+      :priority 82
+      :predicate (lambda ()
+                   (and (boundp 'flycheck-mode) flycheck-mode
+                        (fboundp 'flycheck-explain-error-at-point)))
+      :action (lambda () (flycheck-explain-error-at-point))))))
+
+;;; ── Org clock (NEW) ───────────────────────────────────────────────────────
+
+(defun init-dwim-org-clock-provider ()
+  "Return Org clock actions when a clock is running."
+  (when (and (fboundp 'org-clock-is-active)
+             (org-clock-is-active))
+    (list
+     (init-dwim-make-action
+      :title "Clock out"
+      :description "Stop the running Org clock"
+      :category "OrgClock"
+      :priority 100
+      :predicate (lambda () (fboundp 'org-clock-out))
+      :action (lambda () (org-clock-out)))
+
+     (init-dwim-make-action
+      :title "Show current clock"
+      :description "Display information about the running clock"
+      :category "OrgClock"
+      :priority 90
+      :predicate (lambda () (fboundp 'org-clock-display))
+      :action (lambda ()
+                (message "Clocked in: %s (since %s)"
+                         (org-clock-get-clocked-time)
+                         (format-time-string "%H:%M" org-clock-start-time))))
+
+     (init-dwim-make-action
+      :title "Cancel clock"
+      :description "Cancel the running clock without recording time"
+      :category "OrgClock"
+      :priority 80
+      :predicate (lambda () (fboundp 'org-clock-cancel))
+      :action (lambda () (org-clock-cancel)))
+
+     (init-dwim-make-action
+      :title "Jump to clocked task"
+      :description "Visit the heading of the currently clocked task"
+      :category "OrgClock"
+      :priority 75
+      :predicate (lambda () (fboundp 'org-clock-goto))
+      :action (lambda () (org-clock-goto))))))
+
+;;; ── Isearch (NEW) ─────────────────────────────────────────────────────────
+
+(defun init-dwim-isearch-provider ()
+  "Return actions available while an isearch is active."
+  (when (bound-and-true-p isearch-mode)
+    (list
+     (init-dwim-make-action
+      :title "Occur from search string"
+      :description "Open an occur buffer for the current isearch pattern"
+      :category "Isearch"
+      :priority 90
+      :predicate (lambda () (fboundp 'isearch-occur))
+      :action (lambda () (isearch-occur isearch-string)))
+
+     (init-dwim-make-action
+      :title "Query-replace from search"
+      :description "Switch to query-replace using the current search string"
+      :category "Isearch"
+      :priority 85
+      :predicate (lambda () (fboundp 'isearch-query-replace))
+      :action (lambda () (isearch-query-replace)))
+
+     (init-dwim-make-action
+      :title "Copy search string"
+      :description "Copy the current isearch pattern to the kill ring"
+      :category "Isearch"
+      :priority 70
+      :action (lambda ()
+                (kill-new isearch-string)
+                (message "Copied search: %s" isearch-string)))
+
+     (init-dwim-make-action
+      :title "Exit isearch"
+      :description "Exit isearch, leaving point at the current match"
+      :category "Isearch"
+      :priority 60
+      :action (lambda () (isearch-exit))))))
+
+;;; ── Ediff session (NEW) ───────────────────────────────────────────────────
+
+(defun init-dwim-ediff-provider ()
+  "Return actions for an active Ediff session."
+  (when (bound-and-true-p ediff-mode)
+    (list
+     (init-dwim-make-action
+      :title "Copy A to B"
+      :description "Copy the current diff from buffer A to B"
+      :category "Ediff"
+      :priority 100
+      :predicate (lambda () (fboundp 'ediff-copy-A-to-B))
+      :action (lambda () (ediff-copy-A-to-B nil)))
+
+     (init-dwim-make-action
+      :title "Copy B to A"
+      :description "Copy the current diff from buffer B to A"
+      :category "Ediff"
+      :priority 98
+      :predicate (lambda () (fboundp 'ediff-copy-B-to-A))
+      :action (lambda () (ediff-copy-B-to-A nil)))
+
+     (init-dwim-make-action
+      :title "Next difference"
+      :description "Move to the next ediff difference"
+      :category "Ediff"
+      :priority 90
+      :predicate (lambda () (fboundp 'ediff-next-difference))
+      :action (lambda () (ediff-next-difference)))
+
+     (init-dwim-make-action
+      :title "Previous difference"
+      :description "Move to the previous ediff difference"
+      :category "Ediff"
+      :priority 88
+      :predicate (lambda () (fboundp 'ediff-previous-difference))
+      :action (lambda () (ediff-previous-difference)))
+
+     (init-dwim-make-action
+      :title "Quit ediff"
+      :description "Exit the ediff session"
+      :category "Ediff"
+      :priority 70
+      :predicate (lambda () (fboundp 'ediff-quit))
+      :action (lambda () (ediff-quit nil))))))
+
+;;; ── History / navigation (NEW) ────────────────────────────────────────────
+
+(defun init-dwim-history-provider ()
+  "Return history and navigation convenience actions."
+  (list
    (init-dwim-make-action
-    :title "Magit status"
-    :description "Open Magit for the current repository"
-    :category "Git"
-    :priority 100
-    :predicate (lambda () (fboundp 'magit-status))
+    :title "Open recent file"
+    :description "Visit a recently opened file"
+    :category "History"
+    :priority 85
+    :predicate (lambda () (or (fboundp 'consult-recent-file)
+                              (fboundp 'recentf-open-files)))
     :action (lambda ()
-              (call-interactively #'magit-status)))
+              (if (fboundp 'consult-recent-file)
+                  (consult-recent-file)
+                (recentf-open-files))))
 
    (init-dwim-make-action
-    :title "Magit project status"
-    :description "Open Magit at the current project root"
-    :category "Git"
-    :priority 98
-    :predicate (lambda ()
-                 (and (fboundp 'magit-status)
-                      (fboundp 'project-current)
-                      (project-current nil)))
+    :title "Browse kill ring"
+    :description "Select and yank from kill ring history"
+    :category "History"
+    :priority 80
+    :predicate (lambda () (or (fboundp 'consult-yank-pop)
+                              (fboundp 'browse-kill-ring)))
     :action (lambda ()
-              (magit-status
-               (project-root (project-current t)))))
+              (cond
+               ((fboundp 'consult-yank-pop)
+                (consult-yank-pop))
+               ((fboundp 'browse-kill-ring)
+                (browse-kill-ring))
+               (t (call-interactively #'yank-pop)))))
 
    (init-dwim-make-action
-    :title "Magit dispatch"
-    :description "Open Magit transient dispatch"
-    :category "Git"
-    :priority 92
-    :predicate (lambda () (fboundp 'magit-dispatch))
-    :action (lambda ()
-              (call-interactively #'magit-dispatch)))
+    :title "Jump to last edit"
+    :description "Jump to the position of the last text change"
+    :category "History"
+    :priority 75
+    :predicate (lambda () (fboundp 'goto-last-change))
+    :action (lambda () (goto-last-change nil)))
 
    (init-dwim-make-action
-    :title "Magit file dispatch"
-    :description "Open Magit actions for the current file"
-    :category "Git"
-    :priority 88
-    :predicate (lambda ()
-                 (and buffer-file-name
-                      (fboundp 'magit-file-dispatch)))
-    :action (lambda ()
-              (call-interactively #'magit-file-dispatch)))))
+    :title "Resume last search"
+    :description "Resume the last consult search session"
+    :category "History"
+    :priority 65
+    :predicate (lambda () (fboundp 'consult-resume))
+    :action (lambda () (consult-resume)))))
 
 ;;;; Provider registration
 
 (setq init-dwim-providers
-      '(init-dwim-personal-provider
+      '(init-dwim-session-provider
         init-dwim-region-provider
         init-dwim-url-provider
         init-dwim-file-path-provider
         init-dwim-org-provider
+        init-dwim-org-clock-provider
         init-dwim-dired-provider
         init-dwim-magit-provider
+        init-dwim-git-gutter-provider
         init-dwim-smerge-provider
         init-dwim-diff-provider
+        init-dwim-ediff-provider
         init-dwim-output-buffer-provider
+        init-dwim-comint-provider
+        init-dwim-isearch-provider
         init-dwim-symbol-provider
+        init-dwim-xref-provider
         init-dwim-programming-provider
+        init-dwim-diagnostics-provider
         init-dwim-text-provider
         init-dwim-project-provider
         init-dwim-buffer-provider
@@ -3745,6 +4657,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
         init-dwim-macro-provider
         init-dwim-narrow-provider
         init-dwim-shell-provider
+        init-dwim-history-provider
         init-dwim-emacs-provider))
 
 (provide 'init-dwim)
