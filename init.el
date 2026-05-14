@@ -1019,12 +1019,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
         (init-dwim--replace-bounds-with bounds (format "[[%s][%s]]" url title))
       (insert (format "[[%s][%s]]" url title)))))
 
-(defun init-dwim--org-heading-p ()
-  "Return non-nil if point is in an Org heading or subtree."
-  (and (derived-mode-p 'org-mode)
-       (fboundp 'org-before-first-heading-p)
-       (not (org-before-first-heading-p))))
-
 (defun init-dwim--markdown-mode-p ()
   "Return non-nil if current buffer is a Markdown buffer."
   (or (derived-mode-p 'markdown-mode)
@@ -1719,7 +1713,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
 
 (defun init-dwim-org-provider ()
   "Return actions relevant to Org headings."
-  (when (init-dwim--org-heading-p)
+  (when (derived-mode-p 'org-mode)
     (list
      (init-dwim-make-action
       :title "Toggle TODO state"
