@@ -1795,8 +1795,14 @@ This function uses a short timeout and performs minimal HTML title extraction."
                 (let ((current-prefix-arg '(4)))
                   (call-interactively #'org-export-dispatch))))
 
-     ;; ── New Org actions ──────────────────────────────────────────────────
-
+     (init-dwim-make-action
+      :title "Export buffer"
+      :description "Export this Org file via the export dispatcher"
+      :category "Org"
+      :priority 80
+      :predicate (lambda () (fboundp 'org-export-dispatch))
+      :action (lambda () (call-interactively #'org-export-dispatch)))
+     
      (init-dwim-make-action
       :title "Set tags"
       :description "Add or change tags on this heading"
@@ -1909,6 +1915,54 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :predicate (lambda () (fboundp 'org-cycle))
       :action (lambda () (org-cycle)))
 
+     (init-dwim-make-action
+      :title "Cycle global visibility"
+      :description "Cycle all headings between folded/children/subtree views"
+      :category "Org"
+      :priority 75
+      :predicate (lambda () (fboundp 'org-global-cycle))
+      :action (lambda () (org-global-cycle nil)))
+     
+     (init-dwim-make-action
+      :title "Show sparse todo tree"
+      :description "Show all TODO items in a sparse tree"
+      :category "Org"
+      :priority 72
+      :predicate (lambda () (fboundp 'org-show-todo-tree))
+      :action (lambda () (org-show-todo-tree nil)))
+     
+     (init-dwim-make-action
+      :title "Insert date stamp"
+      :description "Insert an inactive date stamp at point"
+      :category "Org"
+      :priority 70
+      :predicate (lambda () (fboundp 'org-time-stamp-inactive))
+      :action (lambda () (call-interactively #'org-time-stamp-inactive)))
+     
+     (init-dwim-make-action
+      :title "Insert active timestamp"
+      :description "Insert an active (agenda-visible) timestamp at point"
+      :category "Org"
+      :priority 68
+      :predicate (lambda () (fboundp 'org-time-stamp))
+      :action (lambda () (call-interactively #'org-time-stamp)))
+     
+     (init-dwim-make-action
+      :title "Update all dynamic blocks"
+      :description "Recalculate all dynamic blocks in the file"
+      :category "Org"
+      :priority 55
+      :predicate (lambda () (fboundp 'org-update-all-dblocks))
+      :action (lambda () (org-update-all-dblocks)))
+     
+     (init-dwim-make-action
+      :title "Align all tags"
+      :description "Re-align tag columns across all headings"
+      :category "Org"
+      :priority 50
+      :predicate (lambda () (fboundp 'org-align-all-tags))
+      :action (lambda () (org-align-all-tags)))
+     
      (init-dwim-make-action
       :title "Column view"
       :description "Enter Org column view for this heading"
