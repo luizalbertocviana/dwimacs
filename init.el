@@ -721,6 +721,23 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim-extra--package-json-scripts ()
+  "Return script names from package.json in the current project."
+  (when-let ((json (init-dwim-extra--json-file-read "package.json")))
+    (when-let ((scripts (alist-get 'scripts json)))
+      (mapcar (lambda (cell) (symbol-name (car cell))) scripts))))
+
+(defun init-dwim-extra--npm-run-action (script &optional priority)
+  "Create an action that runs npm SCRIPT."
+  (init-dwim-make-action
+   :title (format "npm run %s" script)
+   :description (format "Run package.json script: %s" script)
+   :category "Project"
+   :priority (or priority 74)
+   :action (lambda ()
+             (init-dwim-extra--compile-in-project
+              (format "npm run %s" script)))))
+
 (defun init-dwim-extra--project-root ()
   "Return the current project root, Projectile root, or `default-directory'."
   (or (when (fboundp 'project-current)
@@ -5921,6 +5938,150 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
       :predicate (lambda () (fboundp 'embark-export))
       :action #'embark-export))))
 
+;;; Project task / build DWIM provider
+
+(defun init-dwim-project-task-provider ()
+  "Return project task actions inferred from common project files."
+  (let ((actions nil))
+
+    ;; package.json
+    (when (init-dwim-extra--project-has-file-p "package.json")
+      (push
+       (init-dwim-make-action
+        :title "npm install"
+        :description "Install JavaScript dependencies"
+        :category "Project"
+        :priority 67
+        :action (lambda ()
+                  (init-dwim-extra--compile-in-project "npm install")))
+       actions)
+
+      (dolist (script (init-dwim-extra--package-json-scripts))
+        (push (init-dwim-extra--npm-run-action
+               script
+               (cond
+                ((member script '("test" "check")) 92)
+                ((member script '("build" "compile")) 88)
+                ((member script '("lint" "format")) 82)
+                ((member script '("dev" "start")) 78)
+                (t 70)))
+              actions)))
+
+    ;; Makefile
+    (when (or (init-dwim-extra--project-has-file-p "Makefile")
+              (init-dwim-extra--project-has-file-p "makefile"))
+      (push
+       (init-dwim-make-action
+        :title "make"
+        :description "Run default Makefile target"
+        :category "Project"
+        :priority 86
+        :action (lambda ()
+                  (init-dwim-extra--compile-in-project "make")))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "make test"
+        :description "Run Makefile test target"
+        :category "Project"
+        :priority 84
+        :action (lambda ()
+                  (init-dwim-extra--compile-in-project "make test")))
+       actions))
+
+    ;; Justfile
+    (when (or (init-dwim-extra--project-has-file-p "Justfile")
+              (init-dwim-extra--project-has-file-p "justfile"))
+      (push
+       (init-dwim-make-action
+        :title "just"
+        :description "Run default just recipe"
+        :category "Project"
+        :priority 86
+        :predicate (lambda () (executable-find "just"))
+        :action (lambda ()
+                  (init-dwim-extra--compile-in-project "just")))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "choose just recipe"
+        :description "Choose and run a just recipe"
+        :category "Project"
+        :priority 80
+        :predicate (lambda () (executable-find "just"))
+        :action
+        (lambda ()
+          (let* ((default-directory (init-dwim-extra--project-root))
+                 (recipes
+                  (split-string
+                   (shell-command-to-string "just --summary")
+                   "[ \n]+" t))
+                 (recipe (completing-read "Just recipe: " recipes nil t)))
+            (init-dwim-extra--compile-in-project
+             (format "just %s" recipe)))))
+       actions))
+
+    ;; Cargo
+    (when (init-dwim-extra--project-has-file-p "Cargo.toml")
+      (dolist (pair '(("cargo test" . 92)
+                      ("cargo check" . 88)
+                      ("cargo build" . 84)
+                      ("cargo fmt" . 80)
+                      ("cargo clippy" . 78)))
+        (push
+         (init-dwim-make-action
+          :title (car pair)
+          :description (format "Run `%s' in the project" (car pair))
+          :category "Project"
+          :priority (cdr pair)
+          :predicate (lambda () (executable-find "cargo"))
+          :action (lambda ()
+                    (init-dwim-extra--compile-in-project (car pair))))
+         actions)))
+
+    ;; Go
+    (when (init-dwim-extra--project-has-file-p "go.mod")
+      (dolist (pair '(("go test ./..." . 92)
+                      ("go test ./... -race" . 86)
+                      ("go vet ./..." . 82)
+                      ("go mod tidy" . 78)))
+        (push
+         (init-dwim-make-action
+          :title (car pair)
+          :description (format "Run `%s' in the project" (car pair))
+          :category "Project"
+          :priority (cdr pair)
+          :predicate (lambda () (executable-find "go"))
+          :action (lambda ()
+                    (init-dwim-extra--compile-in-project (car pair))))
+         actions)))
+
+    ;; Python
+    (when (or (init-dwim-extra--project-has-file-p "uv.lock") 
+              (init-dwim-extra--project-has-file-p "pyproject.toml")
+              (init-dwim-extra--project-has-file-p "setup.py")
+              (init-dwim-extra--project-has-file-p "pytest.ini"))
+      (dolist (pair '(("pytest" . 92)
+                      ("python -m pytest" . 90)
+                      ("ruff check ." . 84)
+                      ("ruff format ." . 80)))
+        (push
+         (init-dwim-make-action
+          :title (car pair)
+          :description (format "Run `%s' in the project" (car pair))
+          :category "Project"
+          :priority (cdr pair)
+          :predicate (lambda ()
+                       (executable-find
+                        (car (split-string (car pair)))))
+          :action (lambda ()
+                    (init-dwim-extra--compile-in-project (car pair))))
+         actions)))
+
+    actions))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -5951,6 +6112,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-text-provider
         init-dwim-json-yaml-provider
         init-dwim-project-provider
+        init-dwim-project-task-provider
         init-dwim-buffer-provider
         init-dwim-window-provider
         init-dwim-bookmark-provider
