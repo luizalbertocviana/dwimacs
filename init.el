@@ -721,6 +721,12 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim-extra--eglot-managed-p ()
+  "Return non-nil when current buffer is managed by Eglot."
+  (and (featurep 'eglot)
+       (fboundp 'eglot-managed-p)
+       (eglot-managed-p)))
+
 (defun init-dwim-extra--package-json-scripts ()
   "Return script names from package.json in the current project."
   (when-let ((json (init-dwim-extra--json-file-read "package.json")))
@@ -6169,6 +6175,56 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
             (kill-new dir)
             (message "Copied: %s" dir))))))))
 
+;;; Eglot workspace DWIM provider
+
+(defun init-dwim-eglot-workspace-provider ()
+  "Return workspace-level Eglot actions."
+  (when (init-dwim-extra--eglot-managed-p)
+    (list
+     (init-dwim-make-action
+      :title "LSP workspace symbols"
+      :description "Search workspace symbols through Eglot"
+      :category "LSP"
+      :priority 91
+      :predicate (lambda () (fboundp 'eglot-workspace-symbol))
+      :action #'eglot-workspace-symbol)
+
+     (init-dwim-make-action
+      :title "LSP organize imports"
+      :description "Ask the language server to organize imports"
+      :category "LSP"
+      :priority 88
+      :predicate (lambda () (fboundp 'eglot-code-actions))
+      :action
+      (lambda ()
+        (eglot-code-actions nil nil "source.organizeImports" t)))
+
+     (init-dwim-make-action
+      :title "LSP quick fix"
+      :description "Run quick-fix code actions at point"
+      :category "LSP"
+      :priority 86
+      :predicate (lambda () (fboundp 'eglot-code-actions))
+      :action
+      (lambda ()
+        (eglot-code-actions nil nil "quickfix" t)))
+
+     (init-dwim-make-action
+      :title "LSP reconnect"
+      :description "Reconnect Eglot for this buffer"
+      :category "LSP"
+      :priority 72
+      :predicate (lambda () (fboundp 'eglot-reconnect))
+      :action #'eglot-reconnect)
+
+     (init-dwim-make-action
+      :title "LSP shutdown server"
+      :description "Shutdown the current Eglot server"
+      :category "LSP"
+      :priority 62
+      :predicate (lambda () (fboundp 'eglot-shutdown))
+      :action #'eglot-shutdown))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -6195,6 +6251,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-xref-provider
         init-dwim-elisp-provider
         init-dwim-programming-provider
+        init-dwim-eglot-workspace-provider
         init-dwim-python-provider
         init-dwim-diagnostics-provider
         init-dwim-text-provider
