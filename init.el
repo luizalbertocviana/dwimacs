@@ -6082,6 +6082,93 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
 
     actions))
 
+;;; File utility DWIM provider
+
+(defun init-dwim-file-utility-provider ()
+  "Return utility actions for the current file/buffer."
+  (let ((file (buffer-file-name)))
+    (when file
+      (list
+       (init-dwim-make-action
+        :title "Copy relative file path"
+        :description "Copy current file path relative to project root"
+        :category "File"
+        :priority 91
+        :action
+        (lambda ()
+          (let ((relative (init-dwim-extra--buffer-file-relative-name)))
+            (kill-new relative)
+            (message "Copied: %s" relative))))
+
+       (init-dwim-make-action
+        :title "Copy file path with line"
+        :description "Copy file path plus current line number"
+        :category "File"
+        :priority 89
+        :action
+        (lambda ()
+          (let ((location
+                 (format "%s:%d"
+                         (or (init-dwim-extra--buffer-file-relative-name)
+                             file)
+                         (line-number-at-pos))))
+            (kill-new location)
+            (message "Copied: %s" location))))
+
+       (init-dwim-make-action
+        :title "Make file executable"
+        :description "Add executable bit to the current file"
+        :category "File"
+        :priority 82
+        :predicate
+        (lambda ()
+          (and file
+               (not (file-executable-p file))
+               (not (file-directory-p file))))
+        :action
+        (lambda ()
+          (set-file-modes file
+                          (logior (file-modes file) #o111))
+          (message "Made executable: %s" file)))
+
+       (init-dwim-make-action
+        :title "Edit file as root"
+        :description "Reopen current file using sudo via TRAMP"
+        :category "File"
+        :priority 78
+        :predicate
+        (lambda ()
+          (and file
+               (not (file-remote-p file))))
+        :action
+        (lambda ()
+          (find-alternate-file
+           (concat "/sudo:root@localhost:" file))))
+
+       (init-dwim-make-action
+        :title "Open file URL in browser"
+        :description "Open the current file using a file:// URL"
+        :category "File"
+        :priority 66
+        :predicate
+        (lambda ()
+          (and file
+               (fboundp 'browse-url-of-file)))
+        :action
+        (lambda ()
+          (browse-url-of-file file)))
+
+       (init-dwim-make-action
+        :title "Copy directory path"
+        :description "Copy the directory of the current file"
+        :category "File"
+        :priority 64
+        :action
+        (lambda ()
+          (let ((dir (file-name-directory file)))
+            (kill-new dir)
+            (message "Copied: %s" dir))))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -6090,6 +6177,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-region-provider
         init-dwim-expand-region-provider
         init-dwim-url-provider
+        init-dwim-file-utility-provider
         init-dwim-file-path-provider
         init-dwim-org-provider
         init-dwim-org-clock-provider
