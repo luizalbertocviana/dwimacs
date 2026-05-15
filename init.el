@@ -2058,7 +2058,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :action (lambda ()
                 (cond
                  ((fboundp 'projectile-test-project)
-                  (projectile-test-project))
+                  (call-interactively #'projectile-test-project))
                  ((fboundp 'project-compile)
                   (project-compile))
                  (t
