@@ -718,6 +718,50 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim-extra--project-root ()
+  "Return the current project root, Projectile root, or `default-directory'."
+  (or (when (fboundp 'project-current)
+        (when-let ((project (project-current nil)))
+          (expand-file-name (project-root project))))
+      (when (and (fboundp 'projectile-project-root)
+                 (ignore-errors (projectile-project-p)))
+        (projectile-project-root))
+      default-directory))
+
+(defun init-dwim-extra--project-file (file)
+  "Return absolute path to FILE in the current project."
+  (expand-file-name file (init-dwim-extra--project-root)))
+
+(defun init-dwim-extra--project-has-file-p (file)
+  "Return non-nil when FILE exists in the current project."
+  (file-exists-p (init-dwim-extra--project-file file)))
+
+(defun init-dwim-extra--compile-in-project (command)
+  "Run COMMAND with `compile' from the current project root."
+  (let ((default-directory (init-dwim-extra--project-root)))
+    (compile command)))
+
+(defun init-dwim-extra--shell-command-in-project (command)
+  "Run async shell COMMAND from the current project root."
+  (let ((default-directory (init-dwim-extra--project-root)))
+    (async-shell-command command)))
+
+(defun init-dwim-extra--buffer-file-relative-name ()
+  "Return current buffer file path relative to project root, or nil."
+  (when-let ((file (buffer-file-name)))
+    (file-relative-name file (init-dwim-extra--project-root))))
+
+(defun init-dwim-extra--json-file-read (file)
+  "Read JSON FILE from project root and return an alist, or nil."
+  (let ((path (init-dwim-extra--project-file file)))
+    (when (file-readable-p path)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (let ((json-object-type 'alist)
+              (json-array-type 'list)
+              (json-key-type 'symbol))
+          (json-read))))))
+
 (defun init-dwim--gptel-buffer-p ()
   "Return non-nil when inside a gptel chat buffer."
   (and (fboundp 'gptel-mode)
