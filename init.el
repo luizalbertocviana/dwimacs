@@ -6291,6 +6291,56 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
 
     actions))
 
+;;; Markdown DWIM provider
+
+(defun init-dwim-markdown-provider ()
+  "Return Markdown-specific actions."
+  (when (derived-mode-p 'markdown-mode 'gfm-mode)
+    (list
+     (init-dwim-make-action
+      :title "Markdown preview with grip"
+      :description "Preview current Markdown file with grip-mode"
+      :category "Markdown"
+      :priority 90
+      :predicate (lambda () (fboundp 'grip-mode))
+      :action #'grip-mode)
+
+     (init-dwim-make-action
+      :title "Generate Markdown TOC"
+      :description "Insert or update a Markdown table of contents"
+      :category "Markdown"
+      :priority 86
+      :predicate (lambda () (fboundp 'markdown-toc-generate-toc))
+      :action #'markdown-toc-generate-toc)
+
+     (init-dwim-make-action
+      :title "Markdown follow link"
+      :description "Open the Markdown link at point"
+      :category "Markdown"
+      :priority 82
+      :predicate (lambda () (fboundp 'markdown-follow-thing-at-point))
+      :action #'markdown-follow-thing-at-point)
+
+     (init-dwim-make-action
+      :title "Markdown insert link"
+      :description "Insert a Markdown link"
+      :category "Markdown"
+      :priority 72
+      :predicate (lambda () (fboundp 'markdown-insert-link))
+      :action #'markdown-insert-link)
+
+     (init-dwim-make-action
+      :title "Markdown toggle markup hiding"
+      :description "Toggle Markdown markup visibility"
+      :category "Markdown"
+      :priority 60
+      :predicate (lambda () (boundp 'markdown-hide-markup))
+      :action
+      (lambda ()
+        (setq-local markdown-hide-markup
+                    (not markdown-hide-markup))
+        (font-lock-flush))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -6322,6 +6372,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-python-provider
         init-dwim-diagnostics-provider
         init-dwim-text-provider
+        init-dwim-markdown-provider
         init-dwim-json-yaml-provider
         init-dwim-project-provider
         init-dwim-project-task-provider
