@@ -430,6 +430,12 @@ If nil, no project notes action is offered."
   :type 'string
   :group 'init-dwim)
 
+(defcustom init-dwim-extra-inbox-file
+  (expand-file-name "inbox.org" org-directory)
+  "Org file used by extra DWIM quick note actions."
+  :type 'file
+  :group 'init-dwim)
+
 (defvar init-dwim-debug-mode nil
   "Non-nil means record debug information while collecting actions.")
 
@@ -720,6 +726,18 @@ actions."
     (init-dwim-execute-action (init-dwim-read-action filtered))))
 
 ;;;; Helpers
+
+(defun init-dwim-extra--append-org-note (heading body)
+  "Append HEADING and BODY to `init-dwim-extra-inbox-file'."
+  (make-directory (file-name-directory init-dwim-extra-inbox-file) t)
+  (with-current-buffer (find-file-noselect init-dwim-extra-inbox-file)
+    (goto-char (point-max))
+    (unless (bolp) (insert "\n"))
+    (insert "* " heading "\n")
+    (insert "  " (format-time-string "[%Y-%m-%d %a %H:%M]") "\n")
+    (when body
+      (insert "\n" body "\n"))
+    (save-buffer)))
 
 (defun init-dwim-extra--docker-compose-file-p ()
   "Return non-nil when the project has a Docker Compose file."
@@ -6341,6 +6359,46 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
                     (not markdown-hide-markup))
         (font-lock-flush))))))
 
+;;; Quick notes DWIM provider
+
+(defun init-dwim-quick-note-provider ()
+  "Return quick note and capture actions."
+  (list
+   (init-dwim-make-action
+    :title "Quick note"
+    :description "Append a quick note to the DWIM inbox file"
+    :category "Notes"
+    :priority 77
+    :action
+    (lambda ()
+      (let ((note (read-string "Note: ")))
+        (init-dwim-extra--append-org-note note nil)
+        (message "Saved note"))))
+
+   (init-dwim-make-action
+    :title "Capture region as note"
+    :description "Append selected text to the DWIM inbox file"
+    :category "Notes"
+    :priority 93
+    :predicate #'init-dwim--region-active-p
+    :action
+    (lambda ()
+      (let ((heading (read-string "Heading: "))
+            (body (buffer-substring-no-properties
+                   (region-beginning)
+                   (region-end))))
+        (init-dwim-extra--append-org-note heading body)
+        (message "Captured region"))))
+
+   (init-dwim-make-action
+    :title "Open DWIM inbox"
+    :description "Open the quick note inbox file"
+    :category "Notes"
+    :priority 65
+    :action
+    (lambda ()
+      (find-file init-dwim-extra-inbox-file)))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -6351,6 +6409,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-url-provider
         init-dwim-file-utility-provider
         init-dwim-file-path-provider
+        init-dwim-quick-note-provider
         init-dwim-org-provider
         init-dwim-org-clock-provider
         init-dwim-dired-provider
