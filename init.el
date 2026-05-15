@@ -721,6 +721,13 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim-extra--docker-compose-file-p ()
+  "Return non-nil when the project has a Docker Compose file."
+  (or (init-dwim-extra--project-has-file-p "compose.yaml")
+      (init-dwim-extra--project-has-file-p "compose.yml")
+      (init-dwim-extra--project-has-file-p "docker-compose.yaml")
+      (init-dwim-extra--project-has-file-p "docker-compose.yml")))
+
 (defun init-dwim-extra--eglot-managed-p ()
   "Return non-nil when current buffer is managed by Eglot."
   (and (featurep 'eglot)
@@ -6225,6 +6232,65 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
       :predicate (lambda () (fboundp 'eglot-shutdown))
       :action #'eglot-shutdown))))
 
+;;; Docker DWIM provider
+
+(defun init-dwim-docker-provider ()
+  "Return Docker and Docker Compose actions."
+  (let ((actions nil))
+
+    (when (init-dwim-extra--project-has-file-p "Dockerfile")
+      (push
+       (init-dwim-make-action
+        :title "docker build project"
+        :description "Build Docker image from project Dockerfile"
+        :category "Docker"
+        :priority 84
+        :predicate (lambda () (executable-find "docker"))
+        :action
+        (lambda ()
+          (let* ((root (directory-file-name
+                        (file-name-nondirectory
+                         (directory-file-name
+                          (init-dwim-extra--project-root)))))
+                 (tag (read-string "Docker tag: " root)))
+            (init-dwim-extra--compile-in-project
+             (format "docker build -t %s ." tag)))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "docker run image"
+        :description "Run a Docker image by name"
+        :category "Docker"
+        :priority 70
+        :predicate (lambda () (executable-find "docker"))
+        :action
+        (lambda ()
+          (let ((image (read-string "Image: ")))
+            (init-dwim-extra--shell-command-in-project
+             (format "docker run --rm -it %s" image)))))
+       actions))
+
+    (when (init-dwim-extra--docker-compose-file-p)
+      (dolist (pair '(("docker compose up" . 88)
+                      ("docker compose up --build" . 86)
+                      ("docker compose down" . 78)
+                      ("docker compose ps" . 72)
+                      ("docker compose logs -f" . 70)))
+        (push
+         (init-dwim-make-action
+          :title (car pair)
+          :description (format "Run `%s' in the project" (car pair))
+          :category "Docker"
+          :priority (cdr pair)
+          :predicate (lambda () (executable-find "docker"))
+          :action
+          (lambda ()
+            (init-dwim-extra--compile-in-project (car pair))))
+         actions)))
+
+    actions))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -6250,6 +6316,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-number-provider
         init-dwim-xref-provider
         init-dwim-elisp-provider
+        init-dwim-docker-provider
         init-dwim-programming-provider
         init-dwim-eglot-workspace-provider
         init-dwim-python-provider
