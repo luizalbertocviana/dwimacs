@@ -249,8 +249,9 @@
 (use-package org
   :straight nil
   :defer t
+  :init
+  (setq org-directory (expand-file-name "org" user-emacs-directory))
   :custom
-  (org-directory (expand-file-name "org" user-emacs-directory))
   (org-default-notes-file (expand-file-name "inbox.org" org-directory))
   (org-log-done 'time)
   (org-startup-indented t)
