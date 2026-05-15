@@ -115,6 +115,9 @@
 (use-package embark
   :defer t)
 
+(use-package embark-consult
+  :demand t)
+
 (use-package which-key
   :demand t
   :custom
@@ -5880,6 +5883,44 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
                 (when sym
                   (describe-package sym)))))))
 
+;;; Embark DWIM provider
+
+(defun init-dwim-embark-provider ()
+  "Return Embark actions for the thing at point."
+  (when (featurep 'embark)
+    (list
+     (init-dwim-make-action
+      :title "Embark act"
+      :description "Open Embark actions for the target at point"
+      :category "Embark"
+      :priority 98
+      :predicate (lambda () (fboundp 'embark-act))
+      :action #'embark-act)
+
+     (init-dwim-make-action
+      :title "Embark DWIM"
+      :description "Run Embark's default action for the target at point"
+      :category "Embark"
+      :priority 100
+      :predicate (lambda () (fboundp 'embark-dwim))
+      :action #'embark-dwim)
+
+     (init-dwim-make-action
+      :title "Embark collect"
+      :description "Collect candidates related to the current target"
+      :category "Embark"
+      :priority 70
+      :predicate (lambda () (fboundp 'embark-collect))
+      :action #'embark-collect)
+
+     (init-dwim-make-action
+      :title "Embark export"
+      :description "Export current minibuffer or target candidates"
+      :category "Embark"
+      :priority 68
+      :predicate (lambda () (fboundp 'embark-export))
+      :action #'embark-export))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -5930,6 +5971,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         init-dwim-restclient-provider
         init-dwim-focus-provider
         init-dwim-package-provider
+        init-dwim-embark-provider
         init-dwim-emacs-provider))
 
 (provide 'init-dwim)
