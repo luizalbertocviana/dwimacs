@@ -1,20 +1,17 @@
 ;;; init.el --- Single-file DWIM-centered setup -*- lexical-binding: t; -*-
 ;;;
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "30.1"))
 ;; URL: https://github.com/your-name/doom-dwim
 ;;
 ;;; Commentary:
-;; A modern vanilla Emacs configuration centered around doom-dwim.
+;; A modern vanilla Emacs configuration centered around dwim.
 ;;
 ;; Installation notes:
 ;; 1. Put this file at ~/.emacs.d/init.el.
 ;; 2. Start Emacs.  straight.el will bootstrap itself and install packages.
 ;;
-;; doom-dwim is inlined below from the attached doom-dwim.el.
-;; This file does not install, require, or load doom-dwim as an external package.
-;;
-;; The only custom global keybinding defined here is M-RET -> doom-dwim.
+;; The only custom global keybinding defined here is SPC SPC -> init-dwim.
 ;; All other actions are discovered by doom-dwim providers at runtime.
 
 ;;; Code:
@@ -770,19 +767,9 @@ actions."
              (init-dwim-extra--compile-in-project
               (format "npm run %s" script)))))
 
-(defun init-dwim-extra--project-root ()
-  "Return the current project root, Projectile root, or `default-directory'."
-  (or (when (fboundp 'project-current)
-        (when-let ((project (project-current nil)))
-          (expand-file-name (project-root project))))
-      (when (and (fboundp 'projectile-project-root)
-                 (ignore-errors (projectile-project-p)))
-        (projectile-project-root))
-      default-directory))
-
 (defun init-dwim-extra--project-file (file)
   "Return absolute path to FILE in the current project."
-  (expand-file-name file (init-dwim-extra--project-root)))
+  (expand-file-name file (init-dwim--project-root)))
 
 (defun init-dwim-extra--project-has-file-p (file)
   "Return non-nil when FILE exists in the current project."
@@ -790,18 +777,18 @@ actions."
 
 (defun init-dwim-extra--compile-in-project (command)
   "Run COMMAND with `compile' from the current project root."
-  (let ((default-directory (init-dwim-extra--project-root)))
+  (let ((default-directory (init-dwim--project-root)))
     (compile command)))
 
 (defun init-dwim-extra--shell-command-in-project (command)
   "Run async shell COMMAND from the current project root."
-  (let ((default-directory (init-dwim-extra--project-root)))
+  (let ((default-directory (init-dwim--project-root)))
     (async-shell-command command)))
 
 (defun init-dwim-extra--buffer-file-relative-name ()
   "Return current buffer file path relative to project root, or nil."
   (when-let ((file (buffer-file-name)))
-    (file-relative-name file (init-dwim-extra--project-root))))
+    (file-relative-name file (init-dwim--project-root))))
 
 (defun init-dwim-extra--json-file-read (file)
   "Read JSON FILE from project root and return an alist, or nil."
@@ -841,7 +828,7 @@ actions."
   "Return non-nil in restclient or verb buffers."
   (or (derived-mode-p 'restclient-mode)
       (derived-mode-p 'verb-mode)
-      (and (buffer-file-name)
+      (and (init-dwim--buffer-file-p)
            (string-match-p "\\.http\\'" (buffer-file-name)))))
 
 (defun init-dwim--elisp-mode-p ()
@@ -907,7 +894,9 @@ actions."
       expanded)))
 
 (defun init-dwim--project-root ()
-  "Return current project root, or nil."
+  "Return current project root, falling back to `default-directory'.
+Tries project.el, then Projectile, then `vc-root-dir', then
+`default-directory' so callers always receive a usable directory."
   (or
    (when (and (fboundp 'project-current)
               (project-current nil))
@@ -916,16 +905,26 @@ actions."
           (project-root (project-current nil))
         (car (project-roots (project-current nil))))))
    (when (and (fboundp 'projectile-project-p)
-              (funcall 'projectile-project-p)
+              (ignore-errors (projectile-project-p))
               (fboundp 'projectile-project-root))
-     (funcall 'projectile-project-root))
+     (projectile-project-root))
    (when (fboundp 'vc-root-dir)
      (vc-root-dir))
-   nil))
+   default-directory))
+
+(defun init-dwim--project-detected-p ()
+  "Return non-nil if the current buffer is inside a recognized project."
+  (or
+   (and (fboundp 'projectile-project-p)
+        (ignore-errors (projectile-project-p)))
+   (and (fboundp 'project-current)
+        (project-current nil))
+   (and (fboundp 'vc-root-dir)
+        (vc-root-dir))))
 
 (defun init-dwim--in-project-p ()
-  "Return non-nil if current buffer is in a project."
-  (not (null (init-dwim--project-root))))
+  "Return non-nil if the current buffer is inside a recognized project."
+  (not (null (init-dwim--project-detected-p))))
 
 (defun init-dwim--lsp-available-p ()
   "Return non-nil when LSP-style actions are available in this buffer."
@@ -937,10 +936,10 @@ actions."
 (defun init-dwim--format-region (beg end)
   "Format region from BEG to END using the best available formatter."
   (cond
-   ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-format-region))
-    (lsp-format-region beg end))
    ((and (fboundp 'eglot-format) (ignore-errors (eglot-current-server)))
     (eglot-format beg end))
+   ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-format-region))
+    (lsp-format-region beg end))
    ((fboundp 'apheleia-format-region)
     (apheleia-format-region beg end))
    ((fboundp 'format-all-region)
@@ -951,10 +950,10 @@ actions."
 (defun init-dwim--format-buffer ()
   "Format current buffer using the best available formatter."
   (cond
-   ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-format-buffer))
-    (lsp-format-buffer))
    ((and (fboundp 'eglot-format) (ignore-errors (eglot-current-server)))
     (eglot-format (point-min) (point-max)))
+   ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-format-buffer))
+    (lsp-format-buffer))
    ((fboundp 'apheleia-format-buffer)
     (apheleia-format-buffer))
    ((fboundp 'format-all-buffer)
@@ -1161,13 +1160,50 @@ This function uses a short timeout and performs minimal HTML title extraction."
 (defun init-dwim--word-count-message ()
   "Return a word/line/char summary message for the buffer or region."
   (if (use-region-p)
-      (format "Region: %d words, %d chars"
+      (format "Region: %d words, %d lines, %d chars"
               (count-words (region-beginning) (region-end))
+              (- (line-number-at-pos (region-end)) (line-number-at-pos (region-beginning)))
               (- (region-end) (region-beginning)))
     (format "Buffer: %d words, %d lines, %d chars"
             (count-words (point-min) (point-max))
             (line-number-at-pos (point-max))
             (- (point-max) (point-min)))))
+
+
+(defun init-dwim--json-mode-p ()
+  "Return non-nil in JSON buffers."
+  (or (derived-mode-p 'json-mode 'json-ts-mode)
+      (and (init-dwim--buffer-file-p)
+           (string-match-p "\\.json\\'" (buffer-file-name)))))
+
+(defun init-dwim--yaml-mode-p ()
+  "Return non-nil in YAML buffers."
+  (or (derived-mode-p 'yaml-mode 'yaml-ts-mode)
+      (and (init-dwim--buffer-file-p)
+           (string-match-p "\\.ya?ml\\'" (buffer-file-name)))))
+
+(defun init-dwim--json-path-at-point ()
+  "Return a simple dot-notation JSON path for the key at point, or nil.
+Walks up by counting matching braces/brackets — best-effort, not a parser."
+  (save-excursion
+    (let ((keys '()))
+      (condition-case nil
+          (progn
+            (while t
+              (backward-up-list)
+              (let ((ch (char-after)))
+                (cond
+                 ((eq ch ?\{)
+                  ;; look backward for the key that opened this object value
+                  (save-excursion
+                    (backward-sexp)
+                    (when (looking-at "\"\\([^\"]+\\)\"")
+                      (push (match-string 1) keys))))
+                 ((eq ch ?\[)
+                  (push "[]" keys))))))
+        (scan-error nil))
+      (when keys
+        (string-join (nreverse keys) ".")))))
 
 ;;;; Providers
 
@@ -1626,6 +1662,93 @@ This function uses a short timeout and performs minimal HTML title extraction."
                   (message "%s  size:%d  modified:%s  modes:%s"
                            (file-name-nondirectory path)
                            size mtime modes)))))))
+
+;;; ── File utility ──────────────────────────────────────────────────────────
+
+(defun init-dwim-file-utility-provider ()
+  "Return utility actions for the current file/buffer."
+  (let ((file (buffer-file-name)))
+    (when file
+      (list
+       (init-dwim-make-action
+        :title "Copy relative file path"
+        :description "Copy current file path relative to project root"
+        :category "File"
+        :priority 91
+        :action
+        (lambda ()
+          (let ((relative (init-dwim-extra--buffer-file-relative-name)))
+            (kill-new relative)
+            (message "Copied: %s" relative))))
+
+       (init-dwim-make-action
+        :title "Copy file path with line"
+        :description "Copy file path plus current line number"
+        :category "File"
+        :priority 89
+        :action
+        (lambda ()
+          (let ((location
+                 (format "%s:%d"
+                         (or (init-dwim-extra--buffer-file-relative-name)
+                             file)
+                         (line-number-at-pos))))
+            (kill-new location)
+            (message "Copied: %s" location))))
+
+       (init-dwim-make-action
+        :title "Make file executable"
+        :description "Add executable bit to the current file"
+        :category "File"
+        :priority 82
+        :predicate
+        (lambda ()
+          (and file
+               (not (file-executable-p file))
+               (not (file-directory-p file))))
+        :action
+        (lambda ()
+          (set-file-modes file
+                          (logior (file-modes file) #o111))
+          (message "Made executable: %s" file)))
+
+       (init-dwim-make-action
+        :title "Edit file as root"
+        :description "Reopen current file using sudo via TRAMP"
+        :category "File"
+        :priority 78
+        :predicate
+        (lambda ()
+          (and file
+               (not (file-remote-p file))))
+        :action
+        (lambda ()
+          (find-alternate-file
+           (concat "/sudo:root@localhost:" file))))
+
+       (init-dwim-make-action
+        :title "Open file URL in browser"
+        :description "Open the current file using a file:// URL"
+        :category "File"
+        :priority 66
+        :predicate
+        (lambda ()
+          (and file
+               (fboundp 'browse-url-of-file)))
+        :action
+        (lambda ()
+          (browse-url-of-file file)))
+
+       (init-dwim-make-action
+        :title "Copy directory path"
+        :description "Copy the directory of the current file"
+        :category "File"
+        :priority 64
+        :action
+        (lambda ()
+          (let ((dir (file-name-directory file)))
+            (kill-new dir)
+            (message "Copied: %s" dir))))))))
 
 ;;; ── Symbol ────────────────────────────────────────────────────────────────
 
@@ -2104,48 +2227,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :action #'init-dwim--format-buffer)
 
      (init-dwim-make-action
-      :title "Show diagnostics"
-      :description "Open diagnostics for Flycheck, Flymake, or LSP"
-      :category "Code"
-      :priority 84
-      :predicate (lambda ()
-                   (or (fboundp 'flycheck-list-errors)
-                       (fboundp 'flymake-show-buffer-diagnostics)
-                       (fboundp 'lsp-treemacs-errors-list)))
-      :action (lambda ()
-                (cond
-                 ((fboundp 'flycheck-list-errors)
-                  (flycheck-list-errors))
-                 ((fboundp 'flymake-show-buffer-diagnostics)
-                  (flymake-show-buffer-diagnostics))
-                 ((fboundp 'lsp-treemacs-errors-list)
-                  (lsp-treemacs-errors-list))
-                 (t
-                  (user-error "No diagnostics command available")))))
-
-     (init-dwim-make-action
-      :title "Jump to next error"
-      :description "Go to the next diagnostic or compilation error"
-      :category "Code"
-      :priority 83
-      :predicate (lambda ()
-                   (or (fboundp 'flycheck-next-error)
-                       (fboundp 'flymake-goto-next-error)
-                       (fboundp 'next-error)))
-      :action (lambda ()
-                (cond
-                 ((and (boundp 'flycheck-mode) flycheck-mode
-                       (fboundp 'flycheck-next-error))
-                  (flycheck-next-error))
-                 ((and (boundp 'flymake-mode) flymake-mode
-                       (fboundp 'flymake-goto-next-error))
-                  (flymake-goto-next-error))
-                 ((fboundp 'next-error)
-                  (next-error))
-                 (t
-                  (user-error "No next-error command available")))))
-
-     (init-dwim-make-action
       :title "Open REPL"
       :description "Open a REPL suitable for this buffer"
       :category "Code"
@@ -2218,30 +2299,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
                  (t
                   (user-error "No related-file command available")))))
 
-     ;; ── New programming actions ──────────────────────────────────────────
-
-     (init-dwim-make-action
-      :title "Jump to previous error"
-      :description "Go to the previous diagnostic or compilation error"
-      :category "Code"
-      :priority 82
-      :predicate (lambda ()
-                   (or (fboundp 'flycheck-previous-error)
-                       (fboundp 'flymake-goto-prev-error)
-                       (fboundp 'previous-error)))
-      :action (lambda ()
-                (cond
-                 ((and (boundp 'flycheck-mode) flycheck-mode
-                       (fboundp 'flycheck-previous-error))
-                  (flycheck-previous-error))
-                 ((and (boundp 'flymake-mode) flymake-mode
-                       (fboundp 'flymake-goto-prev-error))
-                  (flymake-goto-prev-error))
-                 ((fboundp 'previous-error)
-                  (previous-error))
-                 (t
-                  (user-error "No previous-error command available")))))
-
      (init-dwim-make-action
       :title "Imenu jump"
       :description "Jump to a definition via imenu"
@@ -2308,22 +2365,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :action (lambda () (profiler-stop) (profiler-report)))
 
      (init-dwim-make-action
-      :title "Compile project"
-      :description "Run the project compile command"
-      :category "Code"
-      :priority 65
-      :action (lambda ()
-                (cond
-                 ((and (fboundp 'projectile-compile-project)
-                       (init-dwim--in-project-p))
-                  (projectile-compile-project nil))
-                 ((and (fboundp 'project-compile)
-                       (project-current nil))
-                  (project-compile))
-                 (t
-                  (call-interactively #'compile)))))
-
-     (init-dwim-make-action
       :title "Send buffer to AI for review"
       :description "Ask an AI to review the current buffer"
       :category "Code"
@@ -2335,42 +2376,12 @@ This function uses a short timeout and performs minimal HTML title extraction."
                  "Please review this code and suggest improvements:")))
 
      (init-dwim-make-action
-      :title "Restart LSP/Eglot server"
-      :description "Reconnect or restart the language server for this buffer"
-      :category "Code"
-      :priority 50
-      :predicate #'init-dwim--lsp-available-p
-      :action (lambda ()
-                (cond
-                 ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-restart-workspace))
-                  (lsp-restart-workspace))
-                 ((and (fboundp 'eglot-current-server)
-                       (ignore-errors (eglot-current-server)))
-                  (call-interactively #'eglot-reconnect))
-                 (t (user-error "No LSP server active")))))
-
-     (init-dwim-make-action
-      :title "Show hover documentation"
-      :description "Show LSP hover documentation for symbol at point"
-      :category "Code"
-      :priority 77
-      :predicate #'init-dwim--lsp-available-p
-      :action (lambda ()
-                (cond
-                 ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-describe-thing-at-point))
-                  (lsp-describe-thing-at-point))
-                 ((fboundp 'eldoc-doc-buffer)
-                  (eldoc-doc-buffer))
-                 (t (user-error "No hover command available")))))
-
-     (init-dwim-make-action
       :title "Run current file"
       :description "Execute the current file with the appropriate interpreter"
       :category "Code"
       :priority 60
       :predicate (lambda ()
-                   (or (derived-mode-p 'python-mode)
-                       (derived-mode-p 'ruby-mode)
+                   (or (derived-mode-p 'ruby-mode)
                        (derived-mode-p 'js-mode 'typescript-mode)
                        (derived-mode-p 'sh-mode)
                        (derived-mode-p 'emacs-lisp-mode)))
@@ -2378,8 +2389,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
                 (let ((f (buffer-file-name)))
                   (unless f (user-error "Buffer is not visiting a file"))
                   (cond
-                   ((derived-mode-p 'python-mode)
-                    (compile (format "python3 %s" (shell-quote-argument f))))
                    ((derived-mode-p 'ruby-mode)
                     (compile (format "ruby %s" (shell-quote-argument f))))
                    ((derived-mode-p 'js-mode 'typescript-mode)
@@ -2388,22 +2397,57 @@ This function uses a short timeout and performs minimal HTML title extraction."
                     (compile (format "bash %s" (shell-quote-argument f))))
                    ((derived-mode-p 'emacs-lisp-mode)
                     (load-file f))
-                   (t (user-error "No runner for %s" major-mode))))))
+                   (t (user-error "No runner for %s" major-mode)))))))))
+
+;;; ── Eglot workspace ───────────────────────────────────────────────────────
+
+(defun init-dwim-eglot-workspace-provider ()
+  "Return workspace-level Eglot actions."
+  (when (init-dwim-extra--eglot-managed-p)
+    (list
+     (init-dwim-make-action
+      :title "LSP workspace symbols"
+      :description "Search workspace symbols through Eglot"
+      :category "LSP"
+      :priority 91
+      :predicate (lambda () (fboundp 'eglot-workspace-symbol))
+      :action #'eglot-workspace-symbol)
 
      (init-dwim-make-action
-      :title "Add missing import (LSP)"
-      :description "Trigger LSP code action to add missing import"
-      :category "Code"
-      :priority 76
-      :predicate #'init-dwim--lsp-available-p
-      :action (lambda ()
-                (cond
-                 ((and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-execute-code-action))
-                  (lsp-execute-code-action "source.addMissingImports"))
-                 ((and (fboundp 'eglot-code-actions)
-                       (ignore-errors (eglot-current-server)))
-                  (eglot-code-actions nil nil "source.addMissingImports"))
-                 (t (user-error "No LSP import action available"))))))))
+      :title "LSP organize imports"
+      :description "Ask the language server to organize imports"
+      :category "LSP"
+      :priority 88
+      :predicate (lambda () (fboundp 'eglot-code-actions))
+      :action
+      (lambda ()
+        (eglot-code-actions nil nil "source.organizeImports" t)))
+
+     (init-dwim-make-action
+      :title "LSP quick fix"
+      :description "Run quick-fix code actions at point"
+      :category "LSP"
+      :priority 86
+      :predicate (lambda () (fboundp 'eglot-code-actions))
+      :action
+      (lambda ()
+        (eglot-code-actions nil nil "quickfix" t)))
+
+     (init-dwim-make-action
+      :title "LSP reconnect"
+      :description "Reconnect Eglot for this buffer"
+      :category "LSP"
+      :priority 72
+      :predicate (lambda () (fboundp 'eglot-reconnect))
+      :action #'eglot-reconnect)
+
+     (init-dwim-make-action
+      :title "LSP shutdown server"
+      :description "Shutdown the current Eglot server"
+      :category "LSP"
+      :priority 62
+      :predicate (lambda () (fboundp 'eglot-shutdown))
+      :action #'eglot-shutdown))))
 
 ;;; ── Text / Markdown ───────────────────────────────────────────────────────
 
@@ -2520,6 +2564,56 @@ This function uses a short timeout and performs minimal HTML title extraction."
                     (org-make-toc))
                    (t
                     (user-error "No TOC command available")))))))))
+
+;;; ── Markdown ──────────────────────────────────────────────────────────────
+
+(defun init-dwim-markdown-provider ()
+  "Return Markdown-specific actions."
+  (when (init-dwim--markdown-mode-p)
+    (list
+     (init-dwim-make-action
+      :title "Markdown preview with grip"
+      :description "Preview current Markdown file with grip-mode"
+      :category "Markdown"
+      :priority 90
+      :predicate (lambda () (fboundp 'grip-mode))
+      :action #'grip-mode)
+
+     (init-dwim-make-action
+      :title "Generate Markdown TOC"
+      :description "Insert or update a Markdown table of contents"
+      :category "Markdown"
+      :priority 86
+      :predicate (lambda () (fboundp 'markdown-toc-generate-toc))
+      :action #'markdown-toc-generate-toc)
+
+     (init-dwim-make-action
+      :title "Markdown follow link"
+      :description "Open the Markdown link at point"
+      :category "Markdown"
+      :priority 82
+      :predicate (lambda () (fboundp 'markdown-follow-thing-at-point))
+      :action #'markdown-follow-thing-at-point)
+
+     (init-dwim-make-action
+      :title "Markdown insert link"
+      :description "Insert a Markdown link"
+      :category "Markdown"
+      :priority 72
+      :predicate (lambda () (fboundp 'markdown-insert-link))
+      :action #'markdown-insert-link)
+
+     (init-dwim-make-action
+      :title "Markdown toggle markup hiding"
+      :description "Toggle Markdown markup visibility"
+      :category "Markdown"
+      :priority 60
+      :predicate (lambda () (boundp 'markdown-hide-markup))
+      :action
+      (lambda ()
+        (setq-local markdown-hide-markup
+                    (not markdown-hide-markup))
+        (font-lock-flush))))))
 
 ;;; ── Dired ─────────────────────────────────────────────────────────────────
 
@@ -2707,7 +2801,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
        :category "Git"
        :priority 88
        :predicate (lambda ()
-                    (and buffer-file-name (fboundp 'magit-file-dispatch)))
+                    (and (init-dwim--buffer-file-p) (fboundp 'magit-file-dispatch)))
        :action (lambda () (call-interactively #'magit-file-dispatch)))
 
       (init-dwim-make-action
@@ -2716,8 +2810,17 @@ This function uses a short timeout and performs minimal HTML title extraction."
        :category "Git"
        :priority 82
        :predicate (lambda ()
-                    (and buffer-file-name (fboundp 'magit-blame-addition)))
-       :action (lambda () (call-interactively #'magit-blame-addition))))
+                    (and (init-dwim--buffer-file-p) (fboundp 'magit-blame-addition)))
+       :action (lambda () (call-interactively #'magit-blame-addition)))
+
+      (init-dwim-make-action
+       :title "Magit blame quit"
+       :description "Hide git blame annotations for the current file"
+       :category "Git"
+       :priority 82
+       :predicate (lambda ()
+                    (bound-and-true-p magit-blame-mode))
+       :action (lambda () (call-interactively #'magit-blame-quit))))
 
      ;; ── Magit-buffer-specific actions ──────────────────────────────────────
      (when in-magit
@@ -2782,8 +2885,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
                    (let ((rev (magit-thing-at-point 'git-revision t)))
                      (kill-new rev)
                      (message "Copied revision: %s" rev))))
-
-        ;; ── New Magit actions ───────────────────────────────────────────────
 
         (init-dwim-make-action
          :title "Create branch"
@@ -3115,22 +3216,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :action (lambda () (call-interactively #'set-buffer-file-coding-system)))
 
    (init-dwim-make-action
-    :title "Narrow to defun"
-    :description "Narrow the buffer to the current function/definition"
-    :category "Buffer"
-    :priority 42
-    :predicate (lambda () (derived-mode-p 'prog-mode))
-    :action (lambda () (narrow-to-defun)))
-
-   (init-dwim-make-action
-    :title "Widen"
-    :description "Remove narrowing and show the entire buffer"
-    :category "Buffer"
-    :priority 44
-    :predicate (lambda () (buffer-narrowed-p))
-    :action (lambda () (widen) (message "Buffer widened")))
-
-   (init-dwim-make-action
     :title "Whitespace cleanup"
     :description "Remove trailing whitespace and normalize the buffer"
     :category "Buffer"
@@ -3147,7 +3232,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :action (lambda () (switch-to-buffer "*scratch*")))
 
    (init-dwim-make-action
-    :title "Open file in other window"
+    :title "Open current file in other window"
     :description "Open the current file's path in another window"
     :category "Buffer"
     :priority 32
@@ -3258,8 +3343,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
                 (cl-loop for win in wins
                          for buf in (append (cdr bufs) (list (car bufs)))
                          do (set-window-buffer win buf)))))
-
-   ;; ── Window navigation (moved from personal-provider) ───────────────────
 
    (init-dwim-make-action
     :title "Other window"
@@ -4246,15 +4329,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
     :action (lambda () (call-interactively #'shell-command)))
 
    (init-dwim-make-action
-    :title "Run shell command on region"
-    :description "Pass the selected region through a shell command"
-    :category "Shell"
-    :priority 62
-    :predicate #'init-dwim--region-active-p
-    :action (lambda ()
-              (call-interactively #'shell-command-on-region)))
-
-   (init-dwim-make-action
     :title "Async shell command"
     :description "Run a shell command asynchronously"
     :category "Shell"
@@ -4415,18 +4489,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
                 (mapc #'disable-theme custom-enabled-themes)
                 (load-theme theme t)
                 (message "Loaded theme: %s" theme))))
-
-   (init-dwim-make-action
-    :title "Open recent file"
-    :description "Visit a recently opened file"
-    :category "Emacs"
-    :priority 45
-    :predicate (lambda () (or (fboundp 'consult-recent-file)
-                              (fboundp 'recentf-open-files)))
-    :action (lambda ()
-              (if (fboundp 'consult-recent-file)
-                  (consult-recent-file)
-                (recentf-open-files))))
 
    (init-dwim-make-action
     :title "Evaluate expression"
@@ -5006,7 +5068,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :category "Elisp"
       :priority 70
       :predicate (lambda ()
-                   (and (buffer-file-name)
+                   (and (init-dwim--buffer-file-p)
                         (string-match-p "\\.el\\'" (buffer-file-name))))
       :action (lambda ()
                 (byte-compile-file (buffer-file-name))
@@ -5018,7 +5080,7 @@ This function uses a short timeout and performs minimal HTML title extraction."
       :category "Elisp"
       :priority 68
       :predicate (lambda ()
-                   (and (buffer-file-name)
+                   (and (init-dwim--buffer-file-p)
                         (string-match-p "\\.el\\'" (buffer-file-name))))
       :action (lambda ()
                 (byte-recompile-file (buffer-file-name) nil 0)
@@ -5492,41 +5554,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
 
 ;;; ── JSON / YAML ───────────────────────────────────────────────────────────
 
-(defun init-dwim--json-mode-p ()
-  "Return non-nil in JSON buffers."
-  (or (derived-mode-p 'json-mode 'json-ts-mode)
-      (and (buffer-file-name)
-           (string-match-p "\\.json\\'" (buffer-file-name)))))
-
-(defun init-dwim--yaml-mode-p ()
-  "Return non-nil in YAML buffers."
-  (or (derived-mode-p 'yaml-mode 'yaml-ts-mode)
-      (and (buffer-file-name)
-           (string-match-p "\\.ya?ml\\'" (buffer-file-name)))))
-
-(defun init-dwim--json-path-at-point ()
-  "Return a simple dot-notation JSON path for the key at point, or nil.
-Walks up by counting matching braces/brackets — best-effort, not a parser."
-  (save-excursion
-    (let ((keys '()))
-      (condition-case nil
-          (progn
-            (while t
-              (backward-up-list)
-              (let ((ch (char-after)))
-                (cond
-                 ((eq ch ?\{)
-                  ;; look backward for the key that opened this object value
-                  (save-excursion
-                    (backward-sexp)
-                    (when (looking-at "\"\\([^\"]+\\)\"")
-                      (push (match-string 1) keys))))
-                 ((eq ch ?\[)
-                  (push "[]" keys))))))
-        (scan-error nil))
-      (when keys
-        (string-join (nreverse keys) ".")))))
-
 (defun init-dwim-json-yaml-provider ()
   "Return actions for JSON and YAML buffers."
   (cond
@@ -5674,7 +5701,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
       :description "Execute the current file with python3"
       :category "Python"
       :priority 95
-      :predicate (lambda () (and (buffer-file-name) (executable-find "python3")))
+      :predicate (lambda () (and (init-dwim--buffer-file-p) (executable-find "python3")))
       :action (lambda ()
                 (compile (format "python3 %s"
                                  (shell-quote-argument (buffer-file-name))))))
@@ -5733,7 +5760,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
       :description "Run flake8 on the current file"
       :category "Python"
       :priority 78
-      :predicate (lambda () (and (buffer-file-name) (executable-find "flake8")))
+      :predicate (lambda () (and (init-dwim--buffer-file-p) (executable-find "flake8")))
       :action (lambda ()
                 (compile (format "flake8 %s"
                                  (shell-quote-argument (buffer-file-name))))))
@@ -5743,7 +5770,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
       :description "Run mypy type checker on the current file"
       :category "Python"
       :priority 76
-      :predicate (lambda () (and (buffer-file-name) (executable-find "mypy")))
+      :predicate (lambda () (and (init-dwim--buffer-file-p) (executable-find "mypy")))
       :action (lambda ()
                 (compile (format "mypy %s"
                                  (shell-quote-argument (buffer-file-name))))))
@@ -5753,7 +5780,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
       :description "Format the buffer with the black formatter"
       :category "Python"
       :priority 80
-      :predicate (lambda () (and (buffer-file-name) (executable-find "black")))
+      :predicate (lambda () (and (init-dwim--buffer-file-p) (executable-find "black")))
       :action (lambda ()
                 (shell-command
                  (format "black %s" (shell-quote-argument (buffer-file-name))))
@@ -5764,7 +5791,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
       :description "Sort and organise imports using isort"
       :category "Python"
       :priority 75
-      :predicate (lambda () (and (buffer-file-name) (executable-find "isort")))
+      :predicate (lambda () (and (init-dwim--buffer-file-p) (executable-find "isort")))
       :action (lambda ()
                 (shell-command
                  (format "isort %s" (shell-quote-argument (buffer-file-name))))
@@ -6045,7 +6072,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
         :predicate (lambda () (executable-find "just"))
         :action
         (lambda ()
-          (let* ((default-directory (init-dwim-extra--project-root))
+          (let* ((default-directory (init-dwim--project-root))
                  (recipes
                   (split-string
                    (shell-command-to-string "just --summary")
@@ -6114,144 +6141,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
 
     actions))
 
-;;; File utility DWIM provider
-
-(defun init-dwim-file-utility-provider ()
-  "Return utility actions for the current file/buffer."
-  (let ((file (buffer-file-name)))
-    (when file
-      (list
-       (init-dwim-make-action
-        :title "Copy relative file path"
-        :description "Copy current file path relative to project root"
-        :category "File"
-        :priority 91
-        :action
-        (lambda ()
-          (let ((relative (init-dwim-extra--buffer-file-relative-name)))
-            (kill-new relative)
-            (message "Copied: %s" relative))))
-
-       (init-dwim-make-action
-        :title "Copy file path with line"
-        :description "Copy file path plus current line number"
-        :category "File"
-        :priority 89
-        :action
-        (lambda ()
-          (let ((location
-                 (format "%s:%d"
-                         (or (init-dwim-extra--buffer-file-relative-name)
-                             file)
-                         (line-number-at-pos))))
-            (kill-new location)
-            (message "Copied: %s" location))))
-
-       (init-dwim-make-action
-        :title "Make file executable"
-        :description "Add executable bit to the current file"
-        :category "File"
-        :priority 82
-        :predicate
-        (lambda ()
-          (and file
-               (not (file-executable-p file))
-               (not (file-directory-p file))))
-        :action
-        (lambda ()
-          (set-file-modes file
-                          (logior (file-modes file) #o111))
-          (message "Made executable: %s" file)))
-
-       (init-dwim-make-action
-        :title "Edit file as root"
-        :description "Reopen current file using sudo via TRAMP"
-        :category "File"
-        :priority 78
-        :predicate
-        (lambda ()
-          (and file
-               (not (file-remote-p file))))
-        :action
-        (lambda ()
-          (find-alternate-file
-           (concat "/sudo:root@localhost:" file))))
-
-       (init-dwim-make-action
-        :title "Open file URL in browser"
-        :description "Open the current file using a file:// URL"
-        :category "File"
-        :priority 66
-        :predicate
-        (lambda ()
-          (and file
-               (fboundp 'browse-url-of-file)))
-        :action
-        (lambda ()
-          (browse-url-of-file file)))
-
-       (init-dwim-make-action
-        :title "Copy directory path"
-        :description "Copy the directory of the current file"
-        :category "File"
-        :priority 64
-        :action
-        (lambda ()
-          (let ((dir (file-name-directory file)))
-            (kill-new dir)
-            (message "Copied: %s" dir))))))))
-
-;;; Eglot workspace DWIM provider
-
-(defun init-dwim-eglot-workspace-provider ()
-  "Return workspace-level Eglot actions."
-  (when (init-dwim-extra--eglot-managed-p)
-    (list
-     (init-dwim-make-action
-      :title "LSP workspace symbols"
-      :description "Search workspace symbols through Eglot"
-      :category "LSP"
-      :priority 91
-      :predicate (lambda () (fboundp 'eglot-workspace-symbol))
-      :action #'eglot-workspace-symbol)
-
-     (init-dwim-make-action
-      :title "LSP organize imports"
-      :description "Ask the language server to organize imports"
-      :category "LSP"
-      :priority 88
-      :predicate (lambda () (fboundp 'eglot-code-actions))
-      :action
-      (lambda ()
-        (eglot-code-actions nil nil "source.organizeImports" t)))
-
-     (init-dwim-make-action
-      :title "LSP quick fix"
-      :description "Run quick-fix code actions at point"
-      :category "LSP"
-      :priority 86
-      :predicate (lambda () (fboundp 'eglot-code-actions))
-      :action
-      (lambda ()
-        (eglot-code-actions nil nil "quickfix" t)))
-
-     (init-dwim-make-action
-      :title "LSP reconnect"
-      :description "Reconnect Eglot for this buffer"
-      :category "LSP"
-      :priority 72
-      :predicate (lambda () (fboundp 'eglot-reconnect))
-      :action #'eglot-reconnect)
-
-     (init-dwim-make-action
-      :title "LSP shutdown server"
-      :description "Shutdown the current Eglot server"
-      :category "LSP"
-      :priority 62
-      :predicate (lambda () (fboundp 'eglot-shutdown))
-      :action #'eglot-shutdown))))
-
-;;; Docker DWIM provider
+;;; ── Docker ────────────────────────────────────────────────────────────────
 
 (defun init-dwim-docker-provider ()
   "Return Docker and Docker Compose actions."
@@ -6270,7 +6160,7 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
           (let* ((root (directory-file-name
                         (file-name-nondirectory
                          (directory-file-name
-                          (init-dwim-extra--project-root)))))
+                          (init-dwim--project-root)))))
                  (tag (read-string "Docker tag: " root)))
             (init-dwim-extra--compile-in-project
              (format "docker build -t %s ." tag)))))
@@ -6309,56 +6199,6 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
          actions)))
 
     actions))
-
-;;; Markdown DWIM provider
-
-(defun init-dwim-markdown-provider ()
-  "Return Markdown-specific actions."
-  (when (derived-mode-p 'markdown-mode 'gfm-mode)
-    (list
-     (init-dwim-make-action
-      :title "Markdown preview with grip"
-      :description "Preview current Markdown file with grip-mode"
-      :category "Markdown"
-      :priority 90
-      :predicate (lambda () (fboundp 'grip-mode))
-      :action #'grip-mode)
-
-     (init-dwim-make-action
-      :title "Generate Markdown TOC"
-      :description "Insert or update a Markdown table of contents"
-      :category "Markdown"
-      :priority 86
-      :predicate (lambda () (fboundp 'markdown-toc-generate-toc))
-      :action #'markdown-toc-generate-toc)
-
-     (init-dwim-make-action
-      :title "Markdown follow link"
-      :description "Open the Markdown link at point"
-      :category "Markdown"
-      :priority 82
-      :predicate (lambda () (fboundp 'markdown-follow-thing-at-point))
-      :action #'markdown-follow-thing-at-point)
-
-     (init-dwim-make-action
-      :title "Markdown insert link"
-      :description "Insert a Markdown link"
-      :category "Markdown"
-      :priority 72
-      :predicate (lambda () (fboundp 'markdown-insert-link))
-      :action #'markdown-insert-link)
-
-     (init-dwim-make-action
-      :title "Markdown toggle markup hiding"
-      :description "Toggle Markdown markup visibility"
-      :category "Markdown"
-      :priority 60
-      :predicate (lambda () (boundp 'markdown-hide-markup))
-      :action
-      (lambda ()
-        (setq-local markdown-hide-markup
-                    (not markdown-hide-markup))
-        (font-lock-flush))))))
 
 ;;; Quick notes DWIM provider
 
@@ -6400,63 +6240,498 @@ Walks up by counting matching braces/brackets — best-effort, not a parser."
     (lambda ()
       (find-file init-dwim-extra-inbox-file)))))
 
+
+;;; ── VC / built-in version control ─────────────────────────────────────────
+
+(defun init-dwim-vc-provider ()
+  "Return actions for Emacs' built-in VC system."
+  (when (and (init-dwim--buffer-file-p)
+             (fboundp 'vc-backend)
+             (vc-backend (buffer-file-name)))
+    (let ((file (buffer-file-name)))
+      (list
+       (init-dwim-make-action
+        :title "VC diff current file"
+        :description "Show a VC diff for the current file"
+        :category "VC"
+        :priority 72
+        :predicate (lambda () (fboundp 'vc-diff))
+        :action (lambda () (vc-diff nil)))
+       (init-dwim-make-action
+        :title "VC log current file"
+        :description "Show VC history for the current file"
+        :category "VC"
+        :priority 70
+        :predicate (lambda () (fboundp 'vc-print-log))
+        :action (lambda () (vc-print-log)))
+       (init-dwim-make-action
+        :title "VC annotate current file"
+        :description "Annotate the current file with VC blame information"
+        :category "VC"
+        :priority 68
+        :predicate (lambda () (fboundp 'vc-annotate))
+        :action (lambda () (vc-annotate file)))
+       (init-dwim-make-action
+        :title "VC revert current file"
+        :description "Revert the current file from version control"
+        :category "VC"
+        :priority 45
+        :predicate (lambda () (fboundp 'vc-revert))
+        :action (lambda () (vc-revert)))
+       (init-dwim-make-action
+        :title "VC register current file"
+        :description "Register the current file with VC"
+        :category "VC"
+        :priority 35
+        :predicate (lambda () (fboundp 'vc-register))
+        :action (lambda () (vc-register)))
+       (init-dwim-make-action
+        :title "VC next action"
+        :description "Run VC's context-sensitive next action"
+        :category "VC"
+        :priority 65
+        :predicate (lambda () (fboundp 'vc-next-action))
+        :action (lambda () (vc-next-action nil)))))))
+
+;;; ── Flymake ───────────────────────────────────────────────────────────────
+
+(defun init-dwim-flymake-provider ()
+  "Return Flymake-specific diagnostics actions."
+  (when (and (bound-and-true-p flymake-mode)
+             (featurep 'flymake))
+    (list
+     (init-dwim-make-action
+      :title "Flymake show project diagnostics"
+      :description "Open Flymake's diagnostics buffer"
+      :category "Diagnostics"
+      :priority 73
+      :predicate (lambda () (fboundp 'flymake-show-project-diagnostics))
+      :action #'flymake-show-project-diagnostics)
+     (init-dwim-make-action
+      :title "Flymake show buffer diagnostics"
+      :description "Open diagnostics for the current buffer"
+      :category "Diagnostics"
+      :priority 72
+      :predicate (lambda () (fboundp 'flymake-show-buffer-diagnostics))
+      :action #'flymake-show-buffer-diagnostics)
+     (init-dwim-make-action
+      :title "Flymake goto next diagnostic"
+      :description "Jump to the next Flymake diagnostic"
+      :category "Diagnostics"
+      :priority 66
+      :predicate (lambda () (fboundp 'flymake-goto-next-error))
+      :action #'flymake-goto-next-error)
+     (init-dwim-make-action
+      :title "Flymake goto previous diagnostic"
+      :description "Jump to the previous Flymake diagnostic"
+      :category "Diagnostics"
+      :priority 65
+      :predicate (lambda () (fboundp 'flymake-goto-prev-error))
+      :action #'flymake-goto-prev-error)
+     (init-dwim-make-action
+      :title "Flymake start check"
+      :description "Ask Flymake to re-check the current buffer"
+      :category "Diagnostics"
+      :priority 64
+      :predicate (lambda () (fboundp 'flymake-start))
+      :action #'flymake-start)
+     (init-dwim-make-action
+      :title "Flymake show diagnostic at point"
+      :description "Display Flymake diagnostic details at point"
+      :category "Diagnostics"
+      :priority 63
+      :predicate (lambda () (fboundp 'flymake-show-diagnostic))
+      :action #'flymake-show-diagnostic))))
+
+;;; ── Treesit ───────────────────────────────────────────────────────────────
+
+(defun init-dwim-treesit-provider ()
+  "Return actions for Emacs tree-sitter integration."
+  (when (and (fboundp 'treesit-available-p)
+             (treesit-available-p))
+    (list
+     (init-dwim-make-action
+      :title "Treesit inspect node at point"
+      :description "Inspect the tree-sitter node at point"
+      :category "Treesit"
+      :priority 64
+      :predicate (lambda () (fboundp 'treesit-inspect-node-at-point))
+      :action #'treesit-inspect-node-at-point)
+     (init-dwim-make-action
+      :title "Treesit copy node type"
+      :description "Copy the type of the tree-sitter node at point"
+      :category "Treesit"
+      :priority 60
+      :predicate (lambda () (fboundp 'treesit-node-at))
+      :action (lambda ()
+                (let ((node (treesit-node-at (point))))
+                  (unless node (user-error "No tree-sitter node at point"))
+                  (kill-new (treesit-node-type node))
+                  (message "Copied node type: %s" (treesit-node-type node)))))
+     (init-dwim-make-action
+      :title "Treesit mark node at point"
+      :description "Select the tree-sitter node at point"
+      :category "Treesit"
+      :priority 58
+      :predicate (lambda () (fboundp 'treesit-node-at))
+      :action (lambda ()
+                (let ((node (treesit-node-at (point))))
+                  (unless node (user-error "No tree-sitter node at point"))
+                  (goto-char (treesit-node-start node))
+                  (push-mark (treesit-node-end node) nil t))))
+     (init-dwim-make-action
+      :title "Treesit mark parent node"
+      :description "Select the parent of the tree-sitter node at point"
+      :category "Treesit"
+      :priority 57
+      :predicate (lambda () (fboundp 'treesit-node-parent))
+      :action (lambda ()
+                (let* ((node (treesit-node-at (point)))
+                       (parent (and node (treesit-node-parent node))))
+                  (unless parent (user-error "No parent tree-sitter node"))
+                  (goto-char (treesit-node-start parent))
+                  (push-mark (treesit-node-end parent) nil t))))
+     (init-dwim-make-action
+      :title "Treesit list parsers"
+      :description "Show active tree-sitter parsers for this buffer"
+      :category "Treesit"
+      :priority 54
+      :predicate (lambda () (fboundp 'treesit-parser-list))
+      :action (lambda ()
+                (message "%s" (mapconcat #'prin1-to-string
+                                         (treesit-parser-list)
+                                         ", ")))))))
+
+;;; ── Context bookmarks ────────────────────────────────────────────────────
+
+(defun init-dwim-bookmark-context-provider ()
+  "Return context-aware bookmark actions."
+  (list
+   (init-dwim-make-action
+    :title "Bookmark current project"
+    :description "Create a bookmark at the current project root"
+    :category "Bookmark"
+    :priority 54
+    :predicate #'init-dwim--in-project-p
+    :action (lambda ()
+              (let ((default-directory (init-dwim--project-root)))
+                (bookmark-set (read-string "Project bookmark name: "
+                                           (file-name-nondirectory
+                                            (directory-file-name default-directory)))))))
+   (init-dwim-make-action
+    :title "Bookmark current directory"
+    :description "Create a bookmark for default-directory"
+    :category "Bookmark"
+    :priority 52
+    :action (lambda ()
+              (let ((default-directory default-directory))
+                (bookmark-set (read-string "Directory bookmark name: "
+                                           (file-name-nondirectory
+                                            (directory-file-name default-directory)))))))
+   (init-dwim-make-action
+    :title "Bookmark current Org heading"
+    :description "Create a bookmark at the current Org heading"
+    :category "Bookmark"
+    :priority 58
+    :predicate (lambda () (derived-mode-p 'org-mode))
+    :action (lambda ()
+              (require 'org)
+              (org-back-to-heading t)
+              (bookmark-set (read-string "Org heading bookmark name: "
+                                         (nth 4 (org-heading-components))))))
+   (init-dwim-make-action
+    :title "Jump to project bookmark"
+    :description "Jump to a bookmark, preferring project-style bookmarks by name"
+    :category "Bookmark"
+    :priority 50
+    :predicate (lambda () (boundp 'bookmark-alist))
+    :action (lambda ()
+              (require 'bookmark)
+              (bookmark-maybe-load-default-file)
+              (bookmark-jump (completing-read "Jump to project bookmark: "
+                                              (mapcar #'car bookmark-alist)
+                                              nil t))))))
+
+;;; ── Snippet maintenance ──────────────────────────────────────────────────
+
+(defun init-dwim-yasnippet-maintenance-provider ()
+  "Return actions for maintaining Yasnippet collections."
+  (when (featurep 'yasnippet)
+    (list
+     (init-dwim-make-action
+      :title "Visit Yasnippet directories"
+      :description "Open the first configured snippet directory"
+      :category "Snippet"
+      :priority 46
+      :action (lambda ()
+                (let ((dir (car (if (listp yas-snippet-dirs)
+                                    yas-snippet-dirs
+                                  (list yas-snippet-dirs)))))
+                  (unless dir (user-error "No yas-snippet-dirs configured"))
+                  (dired dir))))
+     (init-dwim-make-action
+      :title "Reload Yasnippets"
+      :description "Reload all Yasnippet definitions"
+      :category "Snippet"
+      :priority 45
+      :predicate (lambda () (fboundp 'yas-reload-all))
+      :action #'yas-reload-all)
+     (init-dwim-make-action
+      :title "Create mode snippet"
+      :description "Create a new snippet for the current major mode"
+      :category "Snippet"
+      :priority 44
+      :predicate (lambda () (fboundp 'yas-new-snippet))
+      :action #'yas-new-snippet)
+     (init-dwim-make-action
+      :title "Create snippet from region"
+      :description "Use the active region as the body of a new snippet"
+      :category "Snippet"
+      :priority 47
+      :predicate #'use-region-p
+      :action (lambda ()
+                (let ((body (buffer-substring-no-properties
+                             (region-beginning) (region-end))))
+                  (yas-new-snippet)
+                  (goto-char (point-max))
+                  (insert body)))))))
+
+;;; ── Transient ────────────────────────────────────────────────────────────
+
+(defun init-dwim-transient-provider ()
+  "Return actions for Transient sessions."
+  (when (featurep 'transient)
+    (list
+     (init-dwim-make-action
+      :title "Transient resume"
+      :description "Resume the most recent transient, when available"
+      :category "Transient"
+      :priority 42
+      :predicate (lambda () (fboundp 'transient-resume))
+      :action #'transient-resume)
+     (init-dwim-make-action
+      :title "Transient quit one"
+      :description "Quit the active transient popup"
+      :category "Transient"
+      :priority 41
+      :predicate (lambda () (fboundp 'transient-quit-one))
+      :action #'transient-quit-one)
+     (init-dwim-make-action
+      :title "Transient history next"
+      :description "Cycle to the next transient history element"
+      :category "Transient"
+      :priority 40
+      :predicate (lambda () (fboundp 'transient-history-next))
+      :action #'transient-history-next)
+     (init-dwim-make-action
+      :title "Transient history previous"
+      :description "Cycle to the previous transient history element"
+      :category "Transient"
+      :priority 40
+      :predicate (lambda () (fboundp 'transient-history-prev))
+      :action #'transient-history-prev))))
+
+;;; ── File templates ───────────────────────────────────────────────────────
+
+(defun init-dwim-file-template-provider ()
+  "Return small file/template insertion actions."
+  (list
+   (init-dwim-make-action
+    :title "Insert shebang"
+    :description "Insert a shebang line chosen from common interpreters"
+    :category "Template"
+    :priority 48
+    :action (lambda ()
+              (goto-char (point-min))
+              (insert (completing-read "Shebang: "
+                                       '("#!/usr/bin/env bash"
+                                         "#!/usr/bin/env python3"
+                                         "#!/usr/bin/env node"
+                                         "#!/usr/bin/env ruby")
+                                       nil t)
+                      "\n")))
+   (init-dwim-make-action
+    :title "Insert license header"
+    :description "Insert a compact SPDX license header"
+    :category "Template"
+    :priority 44
+    :action (lambda ()
+              (insert (format "%s SPDX-License-Identifier: %s\n"
+                              (or comment-start "#")
+                              (completing-read "License: "
+                                               '("MIT" "Apache-2.0" "GPL-3.0-or-later" "BSD-3-Clause")
+                                               nil t "MIT")))))
+   (init-dwim-make-action
+    :title "Insert Emacs Lisp file header"
+    :description "Insert a conventional Emacs Lisp file header"
+    :category "Template"
+    :priority 46
+    :predicate (lambda () (derived-mode-p 'emacs-lisp-mode 'lisp-interaction-mode))
+    :action (lambda ()
+              (let ((name (or (file-name-nondirectory (or (buffer-file-name) ""))
+                              "file.el")))
+                (goto-char (point-min))
+                (insert (format ";;; %s --- Summary -*- lexical-binding: t; -*-\n\n;;; Commentary:\n\n;;; Code:\n\n" name)))))
+   (init-dwim-make-action
+    :title "Insert Python script template"
+    :description "Insert a small Python main-function template"
+    :category "Template"
+    :priority 46
+    :predicate #'init-dwim--python-mode-p
+    :action (lambda ()
+              (insert "#!/usr/bin/env python3\n\n\ndef main() -> None:\n    pass\n\n\nif __name__ == \"__main__\":\n    main()\n")))
+   (init-dwim-make-action
+    :title "Insert README skeleton"
+    :description "Insert a concise README.md structure"
+    :category "Template"
+    :priority 43
+    :action (lambda ()
+              (insert "# Project name\n\n## Overview\n\n## Installation\n\n## Usage\n\n## Development\n\n## License\n")))
+   (init-dwim-make-action
+    :title "Insert .gitignore template"
+    :description "Insert a small language-aware .gitignore template"
+    :category "Template"
+    :priority 42
+    :action (lambda ()
+              (insert (pcase major-mode
+                        ((or 'python-mode 'python-ts-mode)
+                         "__pycache__/\n*.py[cod]\n.venv/\n.env\n.pytest_cache/\n.mypy_cache/\n")
+                        ((or 'js-mode 'js-ts-mode 'typescript-mode 'typescript-ts-mode)
+                         "node_modules/\ndist/\nbuild/\n.env\n*.log\n")
+                        (_
+                         ".DS_Store\n.env\n*.log\n/tmp/\n")))))))
+
+;;; ── Security and file safety ─────────────────────────────────────────────
+
+(defun init-dwim-security-provider ()
+  "Return small security-oriented buffer and file actions."
+  (let ((file (buffer-file-name)))
+    (list
+     (init-dwim-make-action
+      :title "Show current file permissions"
+      :description "Display the current file's permission bits"
+      :category "Security"
+      :priority 38
+      :predicate (lambda () file)
+      :action (lambda ()
+                (let ((modes (file-modes file 'symbolic)))
+                  (message "%s: %s" (file-name-nondirectory file) modes))))
+     (init-dwim-make-action
+      :title "Make current file read-only"
+      :description "Remove write bits from the current file"
+      :category "Security"
+      :priority 36
+      :predicate (lambda () file)
+      :action (lambda ()
+                (set-file-modes file #o444)
+                (revert-buffer t t)
+                (message "Made read-only: %s" file)))
+     (init-dwim-make-action
+      :title "Encrypt current file with epa"
+      :description "Encrypt the current file using EasyPG"
+      :category "Security"
+      :priority 34
+      :predicate (lambda () (and file (fboundp 'epa-encrypt-file)))
+      :action (lambda ()
+                (call-interactively #'epa-encrypt-file)))
+     (init-dwim-make-action
+      :title "Decrypt current file with epa"
+      :description "Decrypt the current file using EasyPG"
+      :category "Security"
+      :priority 34
+      :predicate (lambda () (and file (fboundp 'epa-decrypt-file)))
+      :action (lambda ()
+                (call-interactively #'epa-decrypt-file)))
+     (init-dwim-make-action
+      :title "Scan buffer for secret-looking strings"
+      :description "Search for common token, key, and password patterns"
+      :category "Security"
+      :priority 40
+      :action (lambda ()
+                (occur "\\b\\(api[_-]?key\\|secret\\|token\\|password\\|passwd\\|private[_-]?key\\)\\b"))))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
-      '(init-dwim-session-provider
+      '(;; Session, global navigation, and completion helpers.
+        init-dwim-session-provider
         init-dwim-consult-provider
+        init-dwim-embark-provider
+        init-dwim-transient-provider
+
+        ;; Selection, point context, and editing objects.
         init-dwim-region-provider
         init-dwim-expand-region-provider
         init-dwim-url-provider
         init-dwim-file-utility-provider
         init-dwim-file-path-provider
+        init-dwim-symbol-provider
+        init-dwim-number-provider
+        init-dwim-register-provider
+        init-dwim-narrow-provider
+        init-dwim-smartparens-provider
+
+        ;; Notes, text, Org, Markdown, snippets, and templates.
         init-dwim-quick-note-provider
         init-dwim-org-provider
         init-dwim-org-clock-provider
+        init-dwim-text-provider
+        init-dwim-markdown-provider
+        init-dwim-spelling-provider
+        init-dwim-snippet-provider
+        init-dwim-yasnippet-maintenance-provider
+        init-dwim-bookmark-provider
+        init-dwim-bookmark-context-provider
+        init-dwim-file-template-provider
+
+        ;; Files, buffers, windows, tabs, and sessions.
+        init-dwim-buffer-provider
+        init-dwim-window-provider
+        init-dwim-tab-bar-provider
         init-dwim-dired-provider
+        init-dwim-history-provider
+        init-dwim-focus-provider
+        init-dwim-security-provider
+
+        ;; Projects, version control, diffs, and tasks.
+        init-dwim-project-provider
+        init-dwim-project-task-provider
+        init-dwim-vc-provider
         init-dwim-magit-provider
         init-dwim-git-gutter-provider
         init-dwim-smerge-provider
         init-dwim-diff-provider
         init-dwim-ediff-provider
-        init-dwim-output-buffer-provider
-        init-dwim-comint-provider
-        init-dwim-isearch-provider
-        init-dwim-symbol-provider
-        init-dwim-number-provider
-        init-dwim-xref-provider
-        init-dwim-elisp-provider
-        init-dwim-docker-provider
+
+        ;; Programming, diagnostics, languages, and structured data.
         init-dwim-programming-provider
         init-dwim-eglot-workspace-provider
-        init-dwim-python-provider
+        init-dwim-flymake-provider
         init-dwim-diagnostics-provider
-        init-dwim-text-provider
-        init-dwim-markdown-provider
+        init-dwim-treesit-provider
+        init-dwim-xref-provider
+        init-dwim-elisp-provider
+        init-dwim-python-provider
         init-dwim-json-yaml-provider
-        init-dwim-project-provider
-        init-dwim-project-task-provider
-        init-dwim-buffer-provider
-        init-dwim-window-provider
-        init-dwim-bookmark-provider
-        init-dwim-register-provider
-        init-dwim-snippet-provider
-        init-dwim-help-provider
-        init-dwim-evil-provider
-        init-dwim-smartparens-provider
-        init-dwim-ai-provider
-        init-dwim-gptel-provider
-        init-dwim-tab-bar-provider
-        init-dwim-spelling-provider
-        init-dwim-macro-provider
-        init-dwim-narrow-provider
+        init-dwim-restclient-provider
+        init-dwim-docker-provider
+
+        ;; Shells, terminals, output buffers, and search state.
+        init-dwim-output-buffer-provider
+        init-dwim-comint-provider
         init-dwim-shell-provider
         init-dwim-eat-provider
-        init-dwim-history-provider
-        init-dwim-restclient-provider
-        init-dwim-focus-provider
+        init-dwim-isearch-provider
+
+        ;; AI integrations.
+        init-dwim-ai-provider
+        init-dwim-gptel-provider
+
+        ;; Emacs meta/help/package operations.
+        init-dwim-help-provider
+        init-dwim-evil-provider
+        init-dwim-macro-provider
         init-dwim-package-provider
-        init-dwim-embark-provider
         init-dwim-emacs-provider))
 
 (provide 'init-dwim)
