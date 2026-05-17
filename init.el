@@ -303,7 +303,9 @@
   :custom
   (dired-dwim-target t)
   (dired-recursive-copies 'always)
-  (dired-recursive-deletes 'top))
+  (dired-recursive-deletes 'top)
+  :config
+  (evil-set-initial-state 'dired-mode 'emacs))
 
 (use-package diredfl
   :hook (dired-mode . diredfl-mode))
