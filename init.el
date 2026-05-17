@@ -212,6 +212,12 @@
   (flymake-start-on-flymake-mode t)
   (flymake-start-on-save-buffer t))
 
+(use-package eldoc
+  :straight nil
+  :ensure nil
+  :config
+  (global-eldoc-mode 1))
+
 (use-package apheleia
   :demand t
   :config
