@@ -134,12 +134,11 @@
         evil-respect-visual-line-mode t
         evil-undo-system 'undo-redo)
   :config
-  (evil-mode 1))
-
-(use-package evil-collection
-  :after evil
-  :config
-  (evil-collection-init))
+  (evil-mode 1)
+  (define-key evil-emacs-state-map (kbd "h") #'evil-backward-char)
+  (define-key evil-emacs-state-map (kbd "j") #'evil-next-line)
+  (define-key evil-emacs-state-map (kbd "k") #'evil-previous-line)
+  (define-key evil-emacs-state-map (kbd "l") #'evil-forward-char))
 
 (use-package corfu
   :demand t
