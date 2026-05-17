@@ -2,7 +2,7 @@
 ;;;
 ;; Version: 0.3.0
 ;; Package-Requires: ((emacs "30.1"))
-;; URL: https://github.com/your-name/doom-dwim
+;; URL: https://github.com/luizalbertocviana/dwimacs
 ;;
 ;;; Commentary:
 ;; A modern vanilla Emacs configuration centered around dwim.
