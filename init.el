@@ -394,6 +394,10 @@
 
 (use-package hide-mode-line :defer t)
 
+(use-package csv-mode :defer t)
+(use-package pyvenv :defer t)
+(use-package consult-git-log-grep :defer t)
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'thingatpt)
@@ -758,6 +762,41 @@ actions."
     (init-dwim-execute-action (init-dwim-read-action filtered))))
 
 ;;;; Helpers
+
+(defun init-dwim--ibuffer-buffer-p ()
+  "Return non-nil when the current buffer is an IBuffer buffer."
+  (derived-mode-p 'ibuffer-mode))
+
+(defun init-dwim--proced-buffer-p ()
+  "Return non-nil when the current buffer is a proced buffer."
+  (derived-mode-p 'proced-mode))
+
+(defun init-dwim--vundo-buffer-p ()
+  "Return non-nil when the current buffer is a vundo tree buffer."
+  (derived-mode-p 'vundo-mode))
+
+(defun init-dwim--compile-buffer-p ()
+  "Return non-nil when inside a compilation-mode buffer."
+  (derived-mode-p 'compilation-mode))
+
+(defun init-dwim--eshell-buffer-p ()
+  "Return non-nil when inside an Eshell buffer."
+  (derived-mode-p 'eshell-mode))
+
+(defun init-dwim--image-buffer-p ()
+  "Return non-nil when the current buffer is displaying an image."
+  (derived-mode-p 'image-mode))
+
+(defun init-dwim--csv-mode-p ()
+  "Return non-nil in CSV or TSV buffers."
+  (or (derived-mode-p 'csv-mode)
+      (and (buffer-file-name)
+           (string-match-p "\\.csv\\'" (buffer-file-name)))))
+
+(defun init-dwim--org-src-block-p ()
+  "Return non-nil when point is inside or on an Org source block."
+  (and (derived-mode-p 'org-mode)
+       (org-in-src-block-p)))
 
 (defun init-dwim-extra--append-org-note (heading body)
   "Append HEADING and BODY to `init-dwim-extra-inbox-file'."
@@ -2124,6 +2163,48 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
             (message "Added %s to .gitignore" rel))))
 
        (init-dwim-make-action
+        :title "Find file at point (ffap)"
+        :description "Visit the file whose path is at point"
+        :category "File"
+        :priority 88
+        :predicate (lambda () (fboundp 'find-file-at-point))
+        :action (lambda () (find-file-at-point)))
+
+       (init-dwim-make-action
+        :title "Insert file contents at point"
+        :description "Insert the contents of a chosen file at point"
+        :category "File"
+        :priority 55
+        :action (lambda ()
+                  (let ((file (read-file-name "Insert file: ")))
+                    (insert-file-contents file))))
+
+       (init-dwim-make-action
+        :title "Touch file"
+        :description "Update the current file's modification timestamp"
+        :category "File"
+        :priority 40
+        :predicate (lambda () (buffer-file-name))
+        :action (lambda ()
+                  (let ((file (buffer-file-name)))
+                    (shell-command (format "touch %s"
+                                           (shell-quote-argument file)))
+                    (message "Touched: %s" (file-name-nondirectory file)))))
+
+       (init-dwim-make-action
+        :title "Compare buffer with clipboard"
+        :description "Diff the current buffer against the kill-ring top entry"
+        :category "File"
+        :priority 38
+        :predicate (lambda () (car kill-ring))
+        :action (lambda ()
+                  (let ((clip-buf (get-buffer-create " *dwim-clip-diff*")))
+                    (with-current-buffer clip-buf
+                      (erase-buffer)
+                      (insert (car kill-ring)))
+                    (diff-buffers clip-buf (current-buffer)))))
+       
+       (init-dwim-make-action
         :title "Toggle auto-save"
         :description "Enable or disable auto-save for this buffer"
         :category "File"
@@ -2333,6 +2414,56 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                   (browse-url
                    (format "https://grep.app/search?q=%s"
                            (url-hexify-string sym))))))
+     
+     (init-dwim-make-action
+      :title "Extract function from region"
+      :description "Prompt for a name and wrap the region in a new function definition"
+      :category "Symbol"
+      :priority 37
+      :predicate (lambda ()
+                   (and (derived-mode-p 'prog-mode)
+                        (use-region-p)))
+      :action (lambda ()
+                (let* ((name (read-string "New function name: "))
+                       (text (buffer-substring-no-properties
+                              (region-beginning) (region-end))))
+                  (delete-region (region-beginning) (region-end))
+                  (insert (format "(%s)" name))
+                  (save-excursion
+                    (beginning-of-defun)
+                    (open-line 2)
+                    (insert (format "(defun %s ()\n  %s)\n" name text))))))
+
+     (init-dwim-make-action
+      :title "List TODO/FIXME near symbol"
+      :description "Occur search for TODO/FIXME within the current defun"
+      :category "Symbol"
+      :priority 36
+      :predicate (lambda () (derived-mode-p 'prog-mode))
+      :action (lambda ()
+                (save-restriction
+                  (save-excursion
+                    (narrow-to-defun)
+                    (occur "\\bTODO\\b\\|\\bFIXME\\b\\|\\bHACK\\b\\|\\bXXX\\b")))))
+
+     (init-dwim-make-action
+      :title "Copy fully-qualified symbol"
+      :description "Copy the symbol including its package/module prefix"
+      :category "Symbol"
+      :priority 35
+      :predicate (lambda ()
+                   (or (init-dwim--clojure-mode-p)
+                       (init-dwim--common-lisp-mode-p)
+                       (init-dwim--python-mode-p)))
+      :action (lambda ()
+                (let* ((sym (thing-at-point 'symbol t))
+                       (full (cond
+                              ((and (init-dwim--python-mode-p)
+                                    (fboundp 'python-info-current-defun))
+                               (python-info-current-defun))
+                              (t sym))))
+                  (kill-new (or full sym ""))
+                  (message "Copied: %s" (or full sym)))))
      
      (init-dwim-make-action
       :title "Add to .dir-locals"
@@ -2664,6 +2795,74 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :predicate (lambda () (fboundp 'org-match-sparse-tree))
       :action (lambda () (call-interactively #'org-match-sparse-tree)))
 
+     (init-dwim-make-action
+      :title "Insert drawer"
+      :description "Insert a named drawer at point"
+      :category "Org"
+      :priority 55
+      :predicate (lambda () (fboundp 'org-insert-drawer))
+      :action (lambda () (call-interactively #'org-insert-drawer)))
+
+     (init-dwim-make-action
+      :title "Set effort estimate"
+      :description "Set the effort estimate for the heading at point"
+      :category "Org"
+      :priority 54
+      :predicate (lambda () (fboundp 'org-set-effort))
+      :action (lambda () (call-interactively #'org-set-effort)))
+
+     (init-dwim-make-action
+      :title "Add footnote"
+      :description "Insert a footnote reference and definition"
+      :category "Org"
+      :priority 52
+      :predicate (lambda () (fboundp 'org-footnote-action))
+      :action (lambda () (org-footnote-action)))
+
+     (init-dwim-make-action
+      :title "Generate heading ID"
+      :description "Create or return a unique :ID: property for this heading"
+      :category "Org"
+      :priority 50
+      :predicate (lambda () (fboundp 'org-id-get-create))
+      :action (lambda ()
+                (let ((id (org-id-get-create)))
+                  (message "Heading ID: %s" id))))
+
+     (init-dwim-make-action
+      :title "Toggle checkbox"
+      :description "Toggle the checkbox state at point"
+      :category "Org"
+      :priority 48
+      :predicate (lambda () (fboundp 'org-toggle-checkbox))
+      :action (lambda () (org-toggle-checkbox)))
+
+     (init-dwim-make-action
+      :title "Sparse tree by property"
+      :description "Show only headings matching a given property value"
+      :category "Org"
+      :priority 46
+      :predicate (lambda () (fboundp 'org-match-sparse-tree))
+      :action (lambda () (call-interactively #'org-match-sparse-tree)))
+
+     (init-dwim-make-action
+      :title "Export to HTML and open"
+      :description "Export the buffer to HTML and open in a browser"
+      :category "Org"
+      :priority 44
+      :predicate (lambda () (fboundp 'org-html-export-to-html))
+      :action (lambda ()
+                (let ((file (org-html-export-to-html)))
+                  (browse-url (concat "file://" (expand-file-name file))))))
+
+     (init-dwim-make-action
+      :title "Insert capture template"
+      :description "Run org-capture with a prompted template key"
+      :category "Org"
+      :priority 42
+      :predicate (lambda () (fboundp 'org-capture))
+      :action (lambda () (call-interactively #'org-capture)))
+     
      (init-dwim-make-action
       :title "Recalculate table"
       :description "Recalculate the Org table at point"
@@ -3096,6 +3295,49 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                   (init-dwim--project-search
                    (string-trim (substring-no-properties word)))))
 
+       (init-dwim-make-action
+        :title "Fill paragraph"
+        :description "Wrap the paragraph at point to fill-column"
+        :category "Text"
+        :priority 72
+        :action (lambda () (fill-paragraph nil)))
+
+       (init-dwim-make-action
+        :title "Unfill paragraph"
+        :description "Join all lines in the paragraph at point into one"
+        :category "Text"
+        :priority 70
+        :predicate (lambda () (fboundp 'unfill-paragraph))
+        :action (lambda ()
+                  (let ((fill-column most-positive-fixnum))
+                    (fill-paragraph nil))))
+
+       (init-dwim-make-action
+        :title "Center line"
+        :description "Centre the current line between the margins"
+        :category "Text"
+        :priority 60
+        :action (lambda () (center-line)))
+
+       (init-dwim-make-action
+        :title "Count sentences"
+        :description "Display sentence count for the buffer or region"
+        :category "Text"
+        :priority 58
+        :action (lambda ()
+                  (let* ((beg (if (use-region-p) (region-beginning) (point-min)))
+                         (end (if (use-region-p) (region-end) (point-max)))
+                         (text (buffer-substring-no-properties beg end))
+                         (count (with-temp-buffer
+                                  (insert text)
+                                  (goto-char (point-min))
+                                  (let ((n 0))
+                                    (while (forward-sentence 1)
+                                      (cl-incf n))
+                                    n))))
+                    (message "%s: %d sentence(s)"
+                             (if (use-region-p) "Region" "Buffer") count))))
+       
        (init-dwim-make-action
         :title "Table of contents"
         :description "Generate/update a table of contents when supported"
@@ -3915,6 +4157,50 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (whitespace-mode 1))))
        
        (init-dwim-make-action
+        :title "Copy project root path"
+        :description "Copy the current project root directory to the kill ring"
+        :category "Project"
+        :priority 38
+        :predicate #'init-dwim--in-project-p
+        :action (lambda ()
+                  (let ((root (init-dwim--project-root)))
+                    (kill-new root)
+                    (message "Copied: %s" root))))
+
+       (init-dwim-make-action
+        :title "List all project buffers"
+        :description "Show all open buffers belonging to this project"
+        :category "Project"
+        :priority 36
+        :predicate #'init-dwim--in-project-p
+        :action (lambda ()
+                  (let ((root (init-dwim--project-root)))
+                    (ibuffer nil "*Project Buffers*"
+                             `((filename . ,root))))))
+
+       (init-dwim-make-action
+        :title "Find regexp in project files"
+        :description "Search for a regexp across all project files"
+        :category "Project"
+        :priority 34
+        :predicate #'init-dwim--in-project-p
+        :action (lambda ()
+                  (let ((re (read-regexp "Regexp: ")))
+                    (init-dwim--project-search re))))
+
+       (init-dwim-make-action
+        :title "Invalidate project cache"
+        :description "Clear the Projectile cache for this project"
+        :category "Project"
+        :priority 30
+        :predicate (lambda ()
+                     (and (fboundp 'projectile-invalidate-cache)
+                          (init-dwim--in-project-p)))
+        :action (lambda ()
+                  (projectile-invalidate-cache nil)
+                  (message "Project cache invalidated")))
+       
+       (init-dwim-make-action
         :title "Add project to known list"
         :description "Register a directory as a known project"
         :category "Project"
@@ -4166,6 +4452,50 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                          words lines chars))))
    
    (init-dwim-make-action
+    :title "Revert buffer without asking"
+    :description "Revert the file from disk immediately, no confirmation"
+    :category "Buffer"
+    :priority 35
+    :predicate (lambda () (buffer-file-name))
+    :action (lambda () (revert-buffer nil t t)))
+
+   (init-dwim-make-action
+    :title "Toggle relative line numbers"
+    :description "Switch between absolute and relative line number display"
+    :category "Buffer"
+    :priority 34
+    :predicate (lambda () (bound-and-true-p display-line-numbers-mode))
+    :action (lambda ()
+              (if (eq display-line-numbers 'relative)
+                  (setq-local display-line-numbers t)
+                (setq-local display-line-numbers 'relative))
+              (message "Line numbers: %s"
+                       (if (eq display-line-numbers 'relative)
+                           "relative" "absolute"))))
+
+   (init-dwim-make-action
+    :title "Lock buffer"
+    :description "Prevent the current window from switching to another buffer"
+    :category "Buffer"
+    :priority 32
+    :action (lambda ()
+              (set-window-dedicated-p (selected-window)
+                                      (not (window-dedicated-p)))
+              (message "Window %s"
+                       (if (window-dedicated-p)
+                           "locked (dedicated)" "unlocked"))))
+
+   (init-dwim-make-action
+    :title "Mark buffer as modified"
+    :description "Force the buffer's modified flag on or off"
+    :category "Buffer"
+    :priority 30
+    :action (lambda ()
+              (set-buffer-modified-p (not (buffer-modified-p)))
+              (message "Buffer marked as %s"
+                       (if (buffer-modified-p) "modified" "unmodified"))))
+   
+   (init-dwim-make-action
     :title "Toggle fill-column indicator"
     :description "Show or hide the fill-column ruler line"
     :category "Buffer"
@@ -4175,6 +4505,95 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
               (display-fill-column-indicator-mode 'toggle)
               (message "Fill-column indicator %s"
                        (if display-fill-column-indicator "on" "off"))))))
+
+;;; ── IBuffer ───────────────────────────────────────────────────────────────
+
+(defun init-dwim-ibuffer-provider ()
+  "Return actions for IBuffer buffers."
+  (when (init-dwim--ibuffer-buffer-p)
+    (list
+     (init-dwim-make-action
+      :title "Visit buffer at point"
+      :description "Open the buffer listed at point"
+      :category "IBuffer"
+      :priority 100
+      :predicate (lambda () (fboundp 'ibuffer-visit-buffer))
+      :action (lambda () (ibuffer-visit-buffer)))
+
+     (init-dwim-make-action
+      :title "Kill marked buffers"
+      :description "Delete all buffers marked with 'D'"
+      :category "IBuffer"
+      :priority 90
+      :predicate (lambda () (fboundp 'ibuffer-do-delete))
+      :action (lambda () (ibuffer-do-delete)))
+
+     (init-dwim-make-action
+      :title "Save marked buffers"
+      :description "Save all marked modified buffers"
+      :category "IBuffer"
+      :priority 88
+      :predicate (lambda () (fboundp 'ibuffer-do-save))
+      :action (lambda () (ibuffer-do-save)))
+
+     (init-dwim-make-action
+      :title "Mark by major mode"
+      :description "Mark all buffers with a given major mode"
+      :category "IBuffer"
+      :priority 82
+      :predicate (lambda () (fboundp 'ibuffer-mark-by-mode))
+      :action (lambda () (call-interactively #'ibuffer-mark-by-mode)))
+
+     (init-dwim-make-action
+      :title "Mark by name regexp"
+      :description "Mark all buffers whose name matches a regexp"
+      :category "IBuffer"
+      :priority 80
+      :predicate (lambda () (fboundp 'ibuffer-mark-by-name-regexp))
+      :action (lambda () (call-interactively #'ibuffer-mark-by-name-regexp)))
+
+     (init-dwim-make-action
+      :title "Unmark all"
+      :description "Remove all marks from the ibuffer list"
+      :category "IBuffer"
+      :priority 75
+      :predicate (lambda () (fboundp 'ibuffer-unmark-all-marks))
+      :action (lambda () (ibuffer-unmark-all-marks)))
+
+     (init-dwim-make-action
+      :title "Filter by project"
+      :description "Show only buffers belonging to the current project"
+      :category "IBuffer"
+      :priority 70
+      :predicate (lambda ()
+                   (and (fboundp 'ibuffer-filter-by-directory)
+                        (init-dwim--in-project-p)))
+      :action (lambda ()
+                (ibuffer-filter-by-directory (init-dwim--project-root))))
+
+     (init-dwim-make-action
+      :title "Group by project"
+      :description "Organise ibuffer groups by projectile project"
+      :category "IBuffer"
+      :priority 68
+      :predicate (lambda () (fboundp 'ibuffer-projectile-set-filter-groups))
+      :action (lambda () (ibuffer-projectile-set-filter-groups)))
+
+     (init-dwim-make-action
+      :title "Sort by major mode"
+      :description "Sort the ibuffer list by major mode"
+      :category "IBuffer"
+      :priority 62
+      :predicate (lambda () (fboundp 'ibuffer-do-sort-by-major-mode))
+      :action (lambda () (ibuffer-do-sort-by-major-mode)))
+
+     (init-dwim-make-action
+      :title "Update buffer list"
+      :description "Refresh the ibuffer display"
+      :category "IBuffer"
+      :priority 55
+      :predicate (lambda () (fboundp 'ibuffer-update))
+      :action (lambda () (ibuffer-update nil t))))))
 
 ;;; ── Window (NEW) ──────────────────────────────────────────────────────────
 
@@ -4345,6 +4764,44 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                 (message "Window %s"
                          (if (not dedicated) "dedicated" "undedicated")))))
 
+   (init-dwim-make-action
+    :title "Toggle maximise window"
+    :description "Toggle between maximised and normal window layout"
+    :category "Window"
+    :priority 58
+    :predicate (lambda () (fboundp 'delete-other-windows))
+    :action (lambda ()
+              (if (= (count-windows) 1)
+                  (winner-undo)
+                (delete-other-windows))))
+
+   (init-dwim-make-action
+    :title "Save window config to register"
+    :description "Store the current window layout in a register"
+    :category "Window"
+    :priority 55
+    :action (lambda ()
+              (let ((reg (read-char "Save window config to register: ")))
+                (window-configuration-to-register reg)
+                (message "Window config saved to register %c" reg))))
+
+   (init-dwim-make-action
+    :title "Restore window config from register"
+    :description "Restore a window layout from a register"
+    :category "Window"
+    :priority 53
+    :action (lambda ()
+              (let ((reg (read-char "Restore window config from register: ")))
+                (jump-to-register reg))))
+
+   (init-dwim-make-action
+    :title "Toggle side window"
+    :description "Show or hide the side windows in the current frame"
+    :category "Window"
+    :priority 48
+    :predicate (lambda () (fboundp 'window-toggle-side-windows))
+    :action (lambda () (window-toggle-side-windows)))
+   
    (init-dwim-make-action
     :title "Fit window to buffer"
     :description "Shrink the window to fit its buffer contents"
@@ -4989,6 +5446,72 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (ignore ctx)))))
 
      (init-dwim-make-action
+      :title "AI: translate selection"
+      :description "Translate the selected text to a prompted language"
+      :category "AI"
+      :priority 46
+      :predicate (lambda ()
+                   (and (init-dwim--ai-available-p)
+                        (init-dwim--region-active-p)))
+      :action (lambda ()
+                (let* ((lang (read-string "Translate to: " "English"))
+                       (prompt (format "Translate the following text to %s:" lang)))
+                  (init-dwim--ai-send-region
+                   (region-beginning) (region-end) prompt))))
+
+     (init-dwim-make-action
+      :title "AI: summarize buffer"
+      :description "Ask AI for a brief summary of the current buffer"
+      :category "AI"
+      :priority 44
+      :predicate #'init-dwim--ai-available-p
+      :action (lambda ()
+                (init-dwim--ai-send-region
+                 (point-min) (point-max)
+                 "Provide a concise 2-3 sentence summary of this content:")))
+
+     (init-dwim-make-action
+      :title "AI: improve prose style"
+      :description "Ask AI to rewrite the selection for clarity and flow"
+      :category "AI"
+      :priority 42
+      :predicate (lambda ()
+                   (and (init-dwim--ai-available-p)
+                        (init-dwim--region-active-p)
+                        (or (derived-mode-p 'text-mode)
+                            (derived-mode-p 'org-mode)
+                            (derived-mode-p 'markdown-mode))))
+      :action (lambda ()
+                (init-dwim--ai-send-region
+                 (region-beginning) (region-end)
+                 "Rewrite this text for clarity, concision, and good prose style. Preserve the meaning exactly:")))
+
+     (init-dwim-make-action
+      :title "AI: review PR description"
+      :description "Ask AI to write or improve a pull request description"
+      :category "AI"
+      :priority 40
+      :predicate (lambda ()
+                   (and (init-dwim--ai-available-p)
+                        (init-dwim--in-project-p)))
+      :action (lambda ()
+                (let* ((diff (shell-command-to-string
+                              (format "git -C %s diff main...HEAD --stat"
+                                      (shell-quote-argument
+                                       (init-dwim--project-root)))))
+                       (log (shell-command-to-string
+                             (format "git -C %s log main...HEAD --oneline"
+                                     (shell-quote-argument
+                                      (init-dwim--project-root)))))
+                       (prompt "Write a clear pull request description with a summary, motivation, and list of changes:"))
+                  (let ((buf (get-buffer-create "*gptel-pr*")))
+                    (with-current-buffer buf
+                      (erase-buffer)
+                      (insert prompt "\n\nCommits:\n" log "\n\nChanged files:\n" diff))
+                    (pop-to-buffer buf)
+                    (when (fboundp 'gptel-send) (gptel-send))))))
+     
+     (init-dwim-make-action
       :title "AI: refactor for readability"
       :description "Ask AI to refactor the selected code without changing behaviour"
       :category "AI"
@@ -5088,6 +5611,85 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :category "Output"
       :priority 55
       :action (lambda () (call-interactively #'isearch-forward))))))
+
+;;; ── Compilation buffer ────────────────────────────────────────────────────
+
+(defun init-dwim-compile-provider ()
+  "Return actions specific to compilation-mode buffers."
+  (when (init-dwim--compile-buffer-p)
+    (list
+     (init-dwim-make-action
+      :title "Recompile"
+      :description "Re-run the last compilation command"
+      :category "Compile"
+      :priority 100
+      :predicate (lambda () (fboundp 'recompile))
+      :action (lambda () (recompile)))
+
+     (init-dwim-make-action
+      :title "Next error"
+      :description "Jump to the next compilation error"
+      :category "Compile"
+      :priority 95
+      :predicate (lambda () (fboundp 'compilation-next-error))
+      :action (lambda () (compilation-next-error 1)))
+
+     (init-dwim-make-action
+      :title "Previous error"
+      :description "Jump to the previous compilation error"
+      :category "Compile"
+      :priority 93
+      :predicate (lambda () (fboundp 'compilation-previous-error))
+      :action (lambda () (compilation-previous-error 1)))
+
+     (init-dwim-make-action
+      :title "Jump to error at point"
+      :description "Visit the source location for the error at point"
+      :category "Compile"
+      :priority 90
+      :predicate (lambda () (fboundp 'compile-goto-error))
+      :action (lambda () (compile-goto-error)))
+
+     (init-dwim-make-action
+      :title "Kill compilation"
+      :description "Terminate the running compilation process"
+      :category "Compile"
+      :priority 85
+      :predicate (lambda ()
+                   (and (fboundp 'kill-compilation)
+                        (get-buffer-process (current-buffer))))
+      :action (lambda () (kill-compilation)))
+
+     (init-dwim-make-action
+      :title "Copy error at point"
+      :description "Copy the error message at point to the kill ring"
+      :category "Compile"
+      :priority 75
+      :action (lambda ()
+                (kill-new (buffer-substring-no-properties
+                           (line-beginning-position)
+                           (line-end-position)))
+                (message "Error line copied")))
+
+     (init-dwim-make-action
+      :title "Toggle colour output"
+      :description "Toggle ANSI colour rendering in the compilation buffer"
+      :category "Compile"
+      :priority 60
+      :predicate (lambda () (fboundp 'ansi-color-apply-on-region))
+      :action (lambda ()
+                (let ((inhibit-read-only t))
+                  (ansi-color-apply-on-region (point-min) (point-max)))))
+
+     (init-dwim-make-action
+      :title "Save compilation buffer"
+      :description "Write the compilation output to a file"
+      :category "Compile"
+      :priority 55
+      :action (lambda ()
+                (let ((file (read-file-name "Save output to: " nil "compile.log")))
+                  (write-region (point-min) (point-max) file)
+                  (message "Saved to %s" file)))))))
 
 ;;; ── Tab bar (NEW) ─────────────────────────────────────────────────────────
 
@@ -5210,6 +5812,48 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :action (lambda () (list-registers)))
 
    (init-dwim-make-action
+    :title "Save window config to register"
+    :description "Store the current window layout in a register"
+    :category "Register"
+    :priority 48
+    :action (lambda ()
+              (let ((reg (read-char "Register for window config: ")))
+                (window-configuration-to-register reg)
+                (message "Window config → register %c" reg))))
+
+   (init-dwim-make-action
+    :title "Store number in register"
+    :description "Save a number in a named register for macro counter use"
+    :category "Register"
+    :priority 45
+    :action (lambda ()
+              (let* ((reg (read-char "Register: "))
+                     (n (read-number "Value: " 0)))
+                (set-register reg n)
+                (message "Register %c = %d" reg n))))
+
+   (init-dwim-make-action
+    :title "Append region to register"
+    :description "Append the selected text to an existing register's contents"
+    :category "Register"
+    :priority 42
+    :predicate #'init-dwim--region-active-p
+    :action (lambda ()
+              (let ((reg (read-char "Append to register: ")))
+                (append-to-register reg (region-beginning) (region-end))
+                (message "Region appended to register %c" reg))))
+
+   (init-dwim-make-action
+    :title "Frame config to register"
+    :description "Save the current frame configuration to a register"
+    :category "Register"
+    :priority 40
+    :action (lambda ()
+              (let ((reg (read-char "Register for frame config: ")))
+                (frame-configuration-to-register reg)
+                (message "Frame config → register %c" reg))))
+   
+   (init-dwim-make-action
     :title "Copy rectangle to register"
     :description "Save a rectangle (column selection) to a register"
     :category "Register"
@@ -5311,6 +5955,40 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                   (ispell-word)
                   (message "Word processed: %s" word))))
 
+     (init-dwim-make-action
+      :title "Spell-check region"
+      :description "Run Ispell on the active region only"
+      :category "Spell"
+      :priority 85
+      :predicate (lambda ()
+                   (and (fboundp 'ispell-region)
+                        (use-region-p)))
+      :action (lambda ()
+                (ispell-region (region-beginning) (region-end))))
+
+     (init-dwim-make-action
+      :title "Accept word for session"
+      :description "Accept the word at point for this session without adding permanently"
+      :category "Spell"
+      :priority 67
+      :predicate (lambda ()
+                   (and (fboundp 'ispell-accept-output)
+                        (thing-at-point 'word t)))
+      :action (lambda ()
+                (let ((word (thing-at-point 'word t)))
+                  (ispell-send-string (concat "@" word "\n"))
+                  (message "Accepted for session: %s" word))))
+
+     (init-dwim-make-action
+      :title "Restart Ispell process"
+      :description "Kill and restart the Ispell subprocess"
+      :category "Spell"
+      :priority 42
+      :predicate (lambda () (fboundp 'ispell-kill-ispell))
+      :action (lambda ()
+                (ispell-kill-ispell t)
+                (message "Ispell process restarted")))
+     
      (init-dwim-make-action
       :title "Auto-detect and set dictionary"
       :description "Detect buffer language and switch Ispell dictionary"
@@ -5631,6 +6309,107 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                 (setq-local default-directory dir)
                 (message "default-directory → %s" dir))))))
 
+;;; ── Eshell buffer ─────────────────────────────────────────────────────────
+
+(defun init-dwim-eshell-buffer-provider ()
+  "Return actions specific to an active Eshell buffer."
+  (when (init-dwim--eshell-buffer-p)
+    (list
+     (init-dwim-make-action
+      :title "Send input"
+      :description "Send the current eshell input line"
+      :category "Eshell"
+      :priority 100
+      :predicate (lambda () (fboundp 'eshell-send-input))
+      :action (lambda () (eshell-send-input)))
+
+     (init-dwim-make-action
+      :title "Previous command"
+      :description "Recall the previous eshell command"
+      :category "Eshell"
+      :priority 90
+      :predicate (lambda () (fboundp 'eshell-previous-input))
+      :action (lambda () (eshell-previous-input 1)))
+
+     (init-dwim-make-action
+      :title "Next command"
+      :description "Recall the next eshell command"
+      :category "Eshell"
+      :priority 88
+      :predicate (lambda () (fboundp 'eshell-next-input))
+      :action (lambda () (eshell-next-input 1)))
+
+     (init-dwim-make-action
+      :title "Search command history"
+      :description "Incrementally search eshell input history"
+      :category "Eshell"
+      :priority 85
+      :predicate (lambda () (fboundp 'eshell-isearch-backward))
+      :action (lambda () (eshell-isearch-backward)))
+
+     (init-dwim-make-action
+      :title "Clear eshell buffer"
+      :description "Erase all output and restart the prompt"
+      :category "Eshell"
+      :priority 80
+      :predicate (lambda () (fboundp 'eshell/clear))
+      :action (lambda () (eshell/clear t) (eshell-send-input)))
+
+     (init-dwim-make-action
+      :title "Change directory"
+      :description "cd to a chosen directory in eshell"
+      :category "Eshell"
+      :priority 75
+      :action (lambda ()
+                (let ((dir (read-directory-name "cd to: ")))
+                  (eshell/cd dir)
+                  (eshell-send-input))))
+
+     (init-dwim-make-action
+      :title "Open eshell in project root"
+      :description "cd to the current project root in this eshell"
+      :category "Eshell"
+      :priority 72
+      :predicate #'init-dwim--in-project-p
+      :action (lambda ()
+                (eshell/cd (init-dwim--project-root))
+                (eshell-send-input)))
+
+     (init-dwim-make-action
+      :title "Copy last eshell output"
+      :description "Copy the output of the last command to the kill ring"
+      :category "Eshell"
+      :priority 68
+      :action (lambda ()
+                (save-excursion
+                  (let* ((end (eshell-beginning-of-input))
+                         (beg (save-excursion
+                                (goto-char end)
+                                (eshell-previous-prompt 1)
+                                (eshell-end-of-input)
+                                (forward-line 1)
+                                (point))))
+                    (kill-new (string-trim
+                               (buffer-substring-no-properties beg end)))
+                    (message "Last output copied")))))
+
+     (init-dwim-make-action
+      :title "Kill eshell process"
+      :description "Send SIGINT to the foreground process"
+      :category "Eshell"
+      :priority 65
+      :predicate (lambda () (fboundp 'eshell-interrupt-process))
+      :action (lambda () (eshell-interrupt-process)))
+
+     (init-dwim-make-action
+      :title "Rename eshell buffer"
+      :description "Give this eshell buffer a custom name"
+      :category "Eshell"
+      :priority 55
+      :action (lambda ()
+                (let ((name (read-string "New name: " (buffer-name))))
+                  (rename-buffer (format "*eshell: %s*" name) t)))))))
+
 ;;; ── Emacs meta-actions (NEW) ──────────────────────────────────────────────
 
 (defun init-dwim-emacs-provider ()
@@ -5761,6 +6540,60 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :action (lambda () (pop-to-buffer "*Backtrace*")))
 
    (init-dwim-make-action
+    :title "Start profiler"
+    :description "Begin recording CPU/memory profiling data"
+    :category "Emacs"
+    :priority 42
+    :predicate (lambda () (fboundp 'profiler-start))
+    :action (lambda ()
+              (profiler-start 'cpu+mem)
+              (message "Profiler started (cpu+mem)")))
+
+   (init-dwim-make-action
+    :title "Stop profiler and report"
+    :description "Stop recording and display the profiler report"
+    :category "Emacs"
+    :priority 40
+    :predicate (lambda ()
+                 (and (fboundp 'profiler-stop)
+                      (fboundp 'profiler-running-p)
+                      (profiler-running-p)))
+    :action (lambda ()
+              (profiler-stop)
+              (profiler-report)))
+
+   (init-dwim-make-action
+    :title "Toggle pixel scroll precision"
+    :description "Enable or disable smooth pixel-level scrolling"
+    :category "Emacs"
+    :priority 38
+    :predicate (lambda () (fboundp 'pixel-scroll-precision-mode))
+    :action (lambda () (pixel-scroll-precision-mode 'toggle)))
+
+   (init-dwim-make-action
+    :title "Open scratch in current mode"
+    :description "Create a scratch buffer using the current major mode"
+    :category "Emacs"
+    :priority 36
+    :action (lambda ()
+              (let ((mode major-mode)
+                    (buf (generate-new-buffer
+                          (format "*scratch[%s]*" major-mode))))
+                (with-current-buffer buf
+                  (funcall mode))
+                (switch-to-buffer buf))))
+
+   (init-dwim-make-action
+    :title "Set tab-width"
+    :description "Interactively set the tab display width for this buffer"
+    :category "Emacs"
+    :priority 34
+    :action (lambda ()
+              (let ((n (read-number "Tab width: " tab-width)))
+                (setq-local tab-width n)
+                (message "tab-width set to %d" n))))
+   
+   (init-dwim-make-action
     :title "List all keybindings"
     :description "Open a buffer showing all active key bindings"
     :category "Emacs"
@@ -5849,6 +6682,84 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :action (lambda ()
               (desktop-save-in-desktop-dir)
               (message "Desktop session saved")))))
+
+;;; ── Proced (process editor) ───────────────────────────────────────────────
+
+(defun init-dwim-proced-provider ()
+  "Return actions for proced process-editor buffers."
+  (when (init-dwim--proced-buffer-p)
+    (list
+     (init-dwim-make-action
+      :title "Refresh process list"
+      :description "Update the proced process list"
+      :category "Proced"
+      :priority 100
+      :predicate (lambda () (fboundp 'proced-update))
+      :action (lambda () (proced-update t)))
+
+     (init-dwim-make-action
+      :title "Send SIGKILL"
+      :description "Kill the marked or current process with SIGKILL"
+      :category "Proced"
+      :priority 90
+      :predicate (lambda () (fboundp 'proced-signal))
+      :action (lambda () (proced-signal "KILL")))
+
+     (init-dwim-make-action
+      :title "Send SIGTERM"
+      :description "Terminate the marked or current process gracefully"
+      :category "Proced"
+      :priority 88
+      :predicate (lambda () (fboundp 'proced-signal))
+      :action (lambda () (proced-signal "TERM")))
+
+     (init-dwim-make-action
+      :title "Send SIGSTOP"
+      :description "Pause (stop) the process at point"
+      :category "Proced"
+      :priority 80
+      :predicate (lambda () (fboundp 'proced-signal))
+      :action (lambda () (proced-signal "STOP")))
+
+     (init-dwim-make-action
+      :title "Send SIGCONT"
+      :description "Continue (resume) the process at point"
+      :category "Proced"
+      :priority 78
+      :predicate (lambda () (fboundp 'proced-signal))
+      :action (lambda () (proced-signal "CONT")))
+
+     (init-dwim-make-action
+      :title "Sort by CPU usage"
+      :description "Sort the process list by CPU percentage"
+      :category "Proced"
+      :priority 72
+      :predicate (lambda () (fboundp 'proced-sort-pcpu))
+      :action (lambda () (proced-sort-pcpu)))
+
+     (init-dwim-make-action
+      :title "Sort by memory usage"
+      :description "Sort the process list by RSS memory"
+      :category "Proced"
+      :priority 70
+      :predicate (lambda () (fboundp 'proced-sort-pmem))
+      :action (lambda () (proced-sort-pmem)))
+
+     (init-dwim-make-action
+      :title "Filter by user"
+      :description "Show only processes owned by a specific user"
+      :category "Proced"
+      :priority 65
+      :predicate (lambda () (fboundp 'proced-filter-interactive))
+      :action (lambda () (call-interactively #'proced-filter-interactive)))
+
+     (init-dwim-make-action
+      :title "Open proced"
+      :description "Open the proced process manager"
+      :category "Proced"
+      :priority 50
+      :predicate (lambda () (fboundp 'proced))
+      :action (lambda () (proced))))))
 
 ;;; ── Git gutter (NEW) ──────────────────────────────────────────────────────
 
@@ -6463,6 +7374,21 @@ is retained for compatibility but returns nil."
     :action (lambda () (vundo)))
 
    (init-dwim-make-action
+    :title "Search command history"
+    :description "Browse and re-execute a previous M-x command"
+    :category "History"
+    :priority 58
+    :predicate (lambda () (fboundp 'consult-complex-command))
+    :action (lambda () (call-interactively #'consult-complex-command)))
+
+   (init-dwim-make-action
+    :title "Show message log"
+    :description "Switch to the *Messages* buffer to review recent output"
+    :category "History"
+    :priority 50
+    :action (lambda () (switch-to-buffer "*Messages*")))
+   
+   (init-dwim-make-action
     :title "Search buffer with last pattern"
     :description "Re-run the previous search pattern with consult-line"
     :category "History"
@@ -6473,6 +7399,60 @@ is retained for compatibility but returns nil."
                       (not (string-empty-p isearch-string))))
     :action (lambda ()
               (consult-line isearch-string)))))
+
+;;; ── Vundo (visual undo) ───────────────────────────────────────────────────
+
+(defun init-dwim-vundo-provider ()
+  "Return actions for vundo visual undo tree buffers."
+  (when (init-dwim--vundo-buffer-p)
+    (list
+     (init-dwim-make-action
+      :title "Confirm undo state"
+      :description "Accept the current undo position and close vundo"
+      :category "Vundo"
+      :priority 100
+      :predicate (lambda () (fboundp 'vundo-confirm))
+      :action (lambda () (vundo-confirm)))
+
+     (init-dwim-make-action
+      :title "Quit vundo"
+      :description "Discard undo traversal and restore the original state"
+      :category "Vundo"
+      :priority 95
+      :predicate (lambda () (fboundp 'vundo-quit))
+      :action (lambda () (vundo-quit)))
+
+     (init-dwim-make-action
+      :title "Move forward in undo tree"
+      :description "Move one step forward (redo direction) in the undo tree"
+      :category "Vundo"
+      :priority 88
+      :predicate (lambda () (fboundp 'vundo-forward))
+      :action (lambda () (vundo-forward 1)))
+
+     (init-dwim-make-action
+      :title "Move backward in undo tree"
+      :description "Move one step backward (undo direction) in the undo tree"
+      :category "Vundo"
+      :priority 86
+      :predicate (lambda () (fboundp 'vundo-backward))
+      :action (lambda () (vundo-backward 1)))
+
+     (init-dwim-make-action
+      :title "Move to next branch"
+      :description "Switch to the next sibling branch in the undo tree"
+      :category "Vundo"
+      :priority 80
+      :predicate (lambda () (fboundp 'vundo-next))
+      :action (lambda () (vundo-next 1)))
+
+     (init-dwim-make-action
+      :title "Move to previous branch"
+      :description "Switch to the previous sibling branch in the undo tree"
+      :category "Vundo"
+      :priority 78
+      :predicate (lambda () (fboundp 'vundo-prev))
+      :action (lambda () (vundo-prev 1))))))
 
 ;;; ── Number at point ───────────────────────────────────────────────────────
 
@@ -6674,6 +7654,68 @@ is retained for compatibility but returns nil."
                          (if debug-on-error "on" "off"))))
 
      (init-dwim-make-action
+      :title "Run ERT tests in buffer"
+      :description "Run all ERT tests defined in the current buffer"
+      :category "Elisp"
+      :priority 78
+      :predicate (lambda () (fboundp 'ert))
+      :action (lambda ()
+                (eval-buffer)
+                (ert t)))
+
+     (init-dwim-make-action
+      :title "Run ERT test at point"
+      :description "Run the ERT test whose definition contains point"
+      :category "Elisp"
+      :priority 76
+      :predicate (lambda ()
+                   (and (fboundp 'ert)
+                        (thing-at-point 'defun t)))
+      :action (lambda ()
+                (let ((sym (save-excursion
+                             (beginning-of-defun)
+                             (forward-sexp 2)
+                             (thing-at-point 'symbol t))))
+                  (when sym
+                    (ert (intern sym))))))
+
+     (init-dwim-make-action
+      :title "Profile function (elp)"
+      :description "Instrument a function for ELP profiling"
+      :category "Elisp"
+      :priority 60
+      :predicate (lambda () (fboundp 'elp-instrument-function))
+      :action (lambda () (call-interactively #'elp-instrument-function)))
+
+     (init-dwim-make-action
+      :title "Imenu jump to defun"
+      :description "Jump to a function definition via imenu"
+      :category "Elisp"
+      :priority 72
+      :predicate (lambda () (fboundp 'consult-imenu))
+      :action (lambda ()
+                (if (fboundp 'consult-imenu)
+                    (consult-imenu)
+                  (call-interactively #'imenu))))
+
+     (init-dwim-make-action
+      :title "Toggle lexical-binding"
+      :description "Add or remove the -*- lexical-binding: t; -*- file header"
+      :category "Elisp"
+      :priority 50
+      :action (lambda ()
+                (save-excursion
+                  (goto-char (point-min))
+                  (if (re-search-forward "lexical-binding:\\s-*t" (line-end-position) t)
+                      (progn
+                        (beginning-of-line)
+                        (kill-line 1)
+                        (message "lexical-binding removed"))
+                    (goto-char (point-min))
+                    (insert ";;; -*- lexical-binding: t; -*-\n")
+                    (message "lexical-binding enabled")))))
+     
+     (init-dwim-make-action
       :title "Benchmark expression"
       :description "Time the expression at point with benchmark-run"
       :category "Elisp"
@@ -6740,6 +7782,61 @@ is retained for compatibility but returns nil."
       :action (lambda () (restclient-jump-prev)))
 
      (init-dwim-make-action
+      :title "Jump to next response"
+      :description "Move to the next response separator in the file"
+      :category "HTTP"
+      :priority 65
+      :predicate (lambda () (fboundp 'restclient-jump-next))
+      :action (lambda ()
+                (re-search-forward "^#+\\s-" nil t)
+                (beginning-of-line)))
+
+     (init-dwim-make-action
+      :title "Copy response body"
+      :description "Copy the response body from the *HTTP Response* buffer"
+      :category "HTTP"
+      :priority 62
+      :predicate (lambda () (get-buffer "*HTTP Response*"))
+      :action (lambda ()
+                (with-current-buffer "*HTTP Response*"
+                  (kill-new (buffer-substring-no-properties
+                             (point-min) (point-max)))
+                  (message "Response body copied (%d chars)"
+                           (- (point-max) (point-min))))))
+
+     (init-dwim-make-action
+      :title "Pretty-print response JSON"
+      :description "Format the JSON body in the *HTTP Response* buffer"
+      :category "HTTP"
+      :priority 60
+      :predicate (lambda ()
+                   (and (get-buffer "*HTTP Response*")
+                        (fboundp 'json-pretty-print)))
+      :action (lambda ()
+                (with-current-buffer "*HTTP Response*"
+                  (let ((inhibit-read-only t))
+                    (json-pretty-print (point-min) (point-max))))))
+
+     (init-dwim-make-action
+      :title "Set restclient variable"
+      :description "Define or update a :variable in the current .http buffer"
+      :category "HTTP"
+      :priority 55
+      :action (lambda ()
+                (let* ((name (read-string "Variable name (without colon): "))
+                       (value (read-string (format "Value for :%s = " name))))
+                  (save-excursion
+                    (goto-char (point-min))
+                    (if (re-search-forward
+                         (format "^:%s\\s-*=\\s-*" (regexp-quote name))
+                         nil t)
+                        (progn
+                          (delete-region (point) (line-end-position))
+                          (insert value))
+                      (goto-char (point-min))
+                      (insert (format ":%s = %s\n" name value)))))))
+     
+     (init-dwim-make-action
       :title "Toggle narrowing to request"
       :description "Narrow buffer to the current HTTP request"
       :category "HTTP"
@@ -6802,6 +7899,43 @@ is retained for compatibility but returns nil."
       :priority 70
       :action (lambda () (call-interactively #'rename-buffer)))
 
+     (init-dwim-make-action
+      :title "Open eshell in project root"
+      :description "Launch eshell at the current project root"
+      :category "Terminal"
+      :priority 58
+      :predicate (lambda ()
+                   (and (fboundp 'eshell)
+                        (init-dwim--in-project-p)))
+      :action (lambda ()
+                (let ((default-directory (init-dwim--project-root)))
+                  (eshell t))))
+
+     (init-dwim-make-action
+      :title "Send buffer to eat"
+      :description "Send the entire buffer contents to the eat terminal"
+      :category "Terminal"
+      :priority 55
+      :predicate (lambda ()
+                   (and (fboundp 'eat-send-string)
+                        (get-buffer "*eat*")))
+      :action (lambda ()
+                (let ((text (buffer-substring-no-properties
+                             (point-min) (point-max))))
+                  (with-current-buffer "*eat*"
+                    (eat-send-string text)))))
+
+     (init-dwim-make-action
+      :title "Split and open terminal"
+      :description "Split the window and open an eat terminal below"
+      :category "Terminal"
+      :priority 52
+      :predicate (lambda () (fboundp 'eat))
+      :action (lambda ()
+                (split-window-below)
+                (other-window 1)
+                (eat)))
+     
      (init-dwim-make-action
       :title "Toggle eat line/char mode"
       :description "Switch between eat line mode and char mode"
@@ -7003,6 +8137,32 @@ is retained for compatibility but returns nil."
       :predicate (lambda () (fboundp 'consult-buffer-other-window))
       :action (lambda () (consult-buffer-other-window)))
 
+     (init-dwim-make-action
+      :title "Focus lines matching"
+      :description "Hide lines not matching a regexp (consult-focus-lines)"
+      :category "Search"
+      :priority 68
+      :predicate (lambda () (fboundp 'consult-focus-lines))
+      :action (lambda () (call-interactively #'consult-focus-lines)))
+
+     (init-dwim-make-action
+      :title "Keep lines matching"
+      :description "Delete lines not matching a regexp (consult-keep-lines)"
+      :category "Search"
+      :priority 65
+      :predicate (lambda () (fboundp 'consult-keep-lines))
+      :action (lambda () (call-interactively #'consult-keep-lines)))
+
+     (init-dwim-make-action
+      :title "Search git log"
+      :description "Grep commit messages in the git log via consult"
+      :category "Search"
+      :priority 58
+      :predicate (lambda ()
+                   (and (fboundp 'consult-git-log-grep)
+                        (init-dwim--in-project-p)))
+      :action (lambda () (call-interactively #'consult-git-log-grep)))
+     
      (init-dwim-make-action
       :title "Browse themes"
       :description "Preview and switch themes interactively"
@@ -7298,6 +8458,84 @@ is retained for compatibility but returns nil."
                     (indent-region (region-beginning) (region-end))
                   (indent-region (point-min) (point-max)))))))))
 
+;;; ── CSV ──────────────────────────────────────────────────────────────────
+
+(defun init-dwim-csv-provider ()
+  "Return actions for CSV buffers."
+  (when (init-dwim--csv-mode-p)
+    (list
+     (init-dwim-make-action
+      :title "Align CSV columns"
+      :description "Visually align all columns in the CSV buffer"
+      :category "CSV"
+      :priority 95
+      :predicate (lambda () (fboundp 'csv-align-fields))
+      :action (lambda () (csv-align-fields nil (point-min) (point-max))))
+
+     (init-dwim-make-action
+      :title "Unalign CSV columns"
+      :description "Remove visual alignment padding from the CSV buffer"
+      :category "CSV"
+      :priority 88
+      :predicate (lambda () (fboundp 'csv-unalign-fields))
+      :action (lambda () (csv-unalign-fields nil (point-min) (point-max))))
+
+     (init-dwim-make-action
+      :title "Sort by current column"
+      :description "Sort CSV rows by the column at point"
+      :category "CSV"
+      :priority 85
+      :predicate (lambda () (fboundp 'csv-sort-fields))
+      :action (lambda () (call-interactively #'csv-sort-fields)))
+
+     (init-dwim-make-action
+      :title "Reverse sort by column"
+      :description "Sort CSV rows by the column at point (descending)"
+      :category "CSV"
+      :priority 83
+      :predicate (lambda () (fboundp 'csv-sort-fields))
+      :action (lambda () (call-interactively #'csv-reverse-sort-fields)))
+
+     (init-dwim-make-action
+      :title "Kill current column"
+      :description "Delete the CSV column at point from all rows"
+      :category "CSV"
+      :priority 75
+      :predicate (lambda () (fboundp 'csv-kill-fields))
+      :action (lambda () (call-interactively #'csv-kill-fields)))
+
+     (init-dwim-make-action
+      :title "Transpose CSV"
+      :description "Swap rows and columns in the CSV buffer"
+      :category "CSV"
+      :priority 68
+      :predicate (lambda () (fboundp 'csv-transpose))
+      :action (lambda () (csv-transpose (point-min) (point-max))))
+
+     (init-dwim-make-action
+      :title "Convert CSV to Org table"
+      :description "Parse the CSV buffer as an Org table"
+      :category "CSV"
+      :priority 65
+      :predicate (lambda () (fboundp 'org-table-convert-region))
+      :action (lambda ()
+                (org-mode)
+                (org-table-convert-region (point-min) (point-max) ?\,)
+                (message "Converted to Org table")))
+
+     (init-dwim-make-action
+      :title "Show CSV header fields"
+      :description "Display column names from the first row in the minibuffer"
+      :category "CSV"
+      :priority 60
+      :action (lambda ()
+                (save-excursion
+                  (goto-char (point-min))
+                  (let ((header (buffer-substring-no-properties
+                                 (line-beginning-position)
+                                 (line-end-position))))
+                    (message "Headers: %s" header))))))))
+
 ;;; ── Python ────────────────────────────────────────────────────────────────
 
 (defun init-dwim-python-provider ()
@@ -7406,6 +8644,60 @@ is retained for compatibility but returns nil."
                 (revert-buffer nil t t)))
 
      (init-dwim-make-action
+      :title "Create virtualenv"
+      :description "Create a new Python virtualenv in the project root"
+      :category "Python"
+      :priority 68
+      :predicate (lambda () (executable-find "python3"))
+      :action (lambda ()
+                (let* ((dir (read-directory-name "Virtualenv directory: "
+                                                 (init-dwim--project-root)
+                                                 nil nil ".venv")))
+                  (compile (format "python3 -m venv %s"
+                                   (shell-quote-argument dir))))))
+
+     (init-dwim-make-action
+      :title "Activate virtualenv"
+      :description "Set VIRTUAL_ENV and update PATH for a chosen venv"
+      :category "Python"
+      :priority 66
+      :predicate (lambda () (fboundp 'pyvenv-activate))
+      :action (lambda () (call-interactively #'pyvenv-activate)))
+
+     (init-dwim-make-action
+      :title "pip install requirements"
+      :description "Install packages from requirements.txt"
+      :category "Python"
+      :priority 64
+      :predicate (lambda ()
+                   (and (executable-find "pip")
+                        (init-dwim-extra--project-has-file-p "requirements.txt")))
+      :action (lambda ()
+                (init-dwim--run-in-project "pip install -r requirements.txt")))
+
+     (init-dwim-make-action
+      :title "Run pytest with coverage"
+      :description "Run pytest with coverage report"
+      :category "Python"
+      :priority 62
+      :predicate (lambda ()
+                   (or (executable-find "pytest")
+                       (executable-find "python3")))
+      :action (lambda ()
+                (init-dwim--run-in-project "pytest --cov --cov-report=term-missing")))
+
+     (init-dwim-make-action
+      :title "Open IPython shell"
+      :description "Start an enhanced interactive Python shell"
+      :category "Python"
+      :priority 60
+      :predicate (lambda () (executable-find "ipython"))
+      :action (lambda ()
+                (let ((buf (get-buffer-create "*IPython*")))
+                  (make-comint-in-buffer "IPython" buf "ipython")
+                  (pop-to-buffer buf))))
+     
+     (init-dwim-make-action
       :title "Insert breakpoint"
       :description "Insert a breakpoint() call at point"
       :category "Python"
@@ -7474,6 +8766,63 @@ is retained for compatibility but returns nil."
                     (erase-buffer))
                   (message "Conversation cleared"))))
 
+     (init-dwim-make-action
+      :title "Open new gptel chat"
+      :description "Create a fresh gptel conversation buffer"
+      :category "AI"
+      :priority 90
+      :predicate (lambda () (fboundp 'gptel))
+      :action (lambda ()
+                (let ((buf (generate-new-buffer-name "*gptel*")))
+                  (gptel buf)
+                  (pop-to-buffer buf))))
+
+     (init-dwim-make-action
+      :title "Abort gptel request"
+      :description "Cancel the in-flight AI request"
+      :category "AI"
+      :priority 85
+      :predicate (lambda ()
+                   (and (fboundp 'gptel-abort)
+                        (bound-and-true-p gptel--request-buffer)))
+      :action (lambda () (gptel-abort (current-buffer))))
+
+     (init-dwim-make-action
+      :title "AI: refactor selection"
+      :description "Ask gptel to refactor the selected region in place"
+      :category "AI"
+      :priority 72
+      :predicate (lambda ()
+                   (and (fboundp 'gptel-rewrite-menu)
+                        (use-region-p)))
+      :action (lambda () (call-interactively #'gptel-rewrite-menu)))
+
+     (init-dwim-make-action
+      :title "AI: insert completion at point"
+      :description "Ask the AI to complete the text at point"
+      :category "AI"
+      :priority 68
+      :predicate (lambda () (fboundp 'gptel-send))
+      :action (lambda ()
+                (let ((ctx (buffer-substring-no-properties
+                            (max (point-min) (- (point) 500))
+                            (point))))
+                  (with-current-buffer (get-buffer-create "*gptel-complete*")
+                    (erase-buffer)
+                    (insert ctx)
+                    (goto-char (point-max))
+                    (gptel-send)))))
+
+     (init-dwim-make-action
+      :title "Toggle gptel streaming"
+      :description "Switch between streaming and batch AI responses"
+      :category "AI"
+      :priority 50
+      :predicate (lambda () (boundp 'gptel-stream))
+      :action (lambda ()
+                (setq gptel-stream (not gptel-stream))
+                (message "gptel streaming: %s" (if gptel-stream "on" "off"))))
+     
      (init-dwim-make-action
       :title "Save chat to file"
       :description "Write the gptel buffer to a dated log file"
@@ -7552,6 +8901,38 @@ is retained for compatibility but returns nil."
     :predicate (lambda () (fboundp 'straight-thaw-versions))
     :action (lambda () (straight-thaw-versions)))
 
+   (init-dwim-make-action
+    :title "straight: fetch all"
+    :description "Fetch all straight.el remotes without merging"
+    :category "Package"
+    :priority 58
+    :predicate (lambda () (fboundp 'straight-fetch-all))
+    :action (lambda () (straight-fetch-all)))
+
+   (init-dwim-make-action
+    :title "straight: visit repo"
+    :description "Open the local git repo for a straight.el package"
+    :category "Package"
+    :priority 52
+    :predicate (lambda () (fboundp 'straight-visit-package))
+    :action (lambda () (call-interactively #'straight-visit-package)))
+
+   (init-dwim-make-action
+    :title "Upgrade package"
+    :description "Upgrade a specific installed package"
+    :category "Package"
+    :priority 66
+    :predicate (lambda () (fboundp 'package-upgrade))
+    :action (lambda () (call-interactively #'package-upgrade)))
+
+   (init-dwim-make-action
+    :title "Remove package"
+    :description "Delete an installed package"
+    :category "Package"
+    :priority 50
+    :predicate (lambda () (fboundp 'package-delete))
+    :action (lambda () (call-interactively #'package-delete)))
+   
    (init-dwim-make-action
     :title "Describe package at point"
     :description "Show information about the package named at point"
@@ -7987,6 +9368,67 @@ is retained for compatibility but returns nil."
         :action (lambda () (compile "docker image ls")))
        actions)
 
+      (push
+       (init-dwim-make-action
+        :title "docker pull image"
+        :description "Pull an image from a registry"
+        :category "Docker"
+        :priority 69
+        :predicate (lambda () (executable-find "docker"))
+        :action (lambda ()
+                  (let ((image (read-string "Image to pull: ")))
+                    (compile (format "docker pull %s"
+                                     (shell-quote-argument image))))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "docker logs (follow)"
+        :description "Follow log output of a running container"
+        :category "Docker"
+        :priority 71
+        :predicate (lambda () (executable-find "docker"))
+        :action (lambda ()
+                  (let ((name (read-string "Container name: ")))
+                    (async-shell-command
+                     (format "docker logs -f %s"
+                             (shell-quote-argument name))))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "docker volume ls"
+        :description "List all Docker volumes"
+        :category "Docker"
+        :priority 60
+        :predicate (lambda () (executable-find "docker"))
+        :action (lambda () (compile "docker volume ls")))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "docker network ls"
+        :description "List all Docker networks"
+        :category "Docker"
+        :priority 58
+        :predicate (lambda () (executable-find "docker"))
+        :action (lambda () (compile "docker network ls")))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "docker compose restart"
+        :description "Restart all Compose services"
+        :category "Docker"
+        :priority 77
+        :predicate (lambda ()
+                     (and (executable-find "docker")
+                          (init-dwim-extra--docker-compose-file-p)))
+        :action (lambda ()
+                  (init-dwim-extra--compile-in-project
+                   "docker compose restart")))
+       actions)
+      
       (push
        (init-dwim-make-action
         :title "docker system prune"
@@ -8968,6 +10410,45 @@ is retained for compatibility but returns nil."
       :action (lambda () (sly-macroexpand-1)))
 
      (init-dwim-make-action
+      :title "Eval region"
+      :description "Evaluate the active region in the SLY REPL"
+      :category "CommonLisp"
+      :priority 87
+      :predicate (lambda ()
+                   (and (fboundp 'sly-eval-region)
+                        (use-region-p)))
+      :action (lambda ()
+                (sly-eval-region (region-beginning) (region-end))))
+
+     (init-dwim-make-action
+      :title "Argslist at point"
+      :description "Show the argument list for the function at point"
+      :category "CommonLisp"
+      :priority 76
+      :predicate (lambda () (fboundp 'sly-show-arglist))
+      :action (lambda () (sly-show-arglist)))
+
+     (init-dwim-make-action
+      :title "Quickload system"
+      :description "Load a Quicklisp system by name"
+      :category "CommonLisp"
+      :priority 65
+      :predicate (lambda () (fboundp 'sly-eval-async))
+      :action (lambda ()
+                (let ((sys (read-string "System to quickload: ")))
+                  (sly-eval-async
+                   `(ql:quickload ,(intern sys))
+                   (lambda (_) (message "Loaded: %s" sys))))))
+
+     (init-dwim-make-action
+      :title "Trace function"
+      :description "Toggle tracing for the function at point"
+      :category "CommonLisp"
+      :priority 62
+      :predicate (lambda () (fboundp 'sly-toggle-trace-fdefinition))
+      :action (lambda () (call-interactively #'sly-toggle-trace-fdefinition)))
+     
+     (init-dwim-make-action
       :title "Quit SLY"
       :description "Disconnect SLY and quit the Lisp image"
       :category "CommonLisp"
@@ -9762,6 +11243,93 @@ is retained for compatibility but returns nil."
                 (let ((url (read-string "URL: ")))
                   (eww url t)))))))
 
+;;; ── Image viewer ──────────────────────────────────────────────────────────
+
+(defun init-dwim-image-provider ()
+  "Return actions for image buffers (image-mode)."
+  (when (init-dwim--image-buffer-p)
+    (list
+     (init-dwim-make-action
+      :title "Zoom image in"
+      :description "Increase the displayed image size"
+      :category "Image"
+      :priority 90
+      :predicate (lambda () (fboundp 'image-increase-size))
+      :action (lambda () (image-increase-size 2)))
+
+     (init-dwim-make-action
+      :title "Zoom image out"
+      :description "Decrease the displayed image size"
+      :category "Image"
+      :priority 88
+      :predicate (lambda () (fboundp 'image-decrease-size))
+      :action (lambda () (image-decrease-size 2)))
+
+     (init-dwim-make-action
+      :title "Fit image to window"
+      :description "Scale the image to fit the current window"
+      :category "Image"
+      :priority 85
+      :predicate (lambda () (fboundp 'image-fit-to-window))
+      :action (lambda () (image-fit-to-window)))
+
+     (init-dwim-make-action
+      :title "Reset image size"
+      :description "Show image at its original (100%) size"
+      :category "Image"
+      :priority 82
+      :predicate (lambda () (fboundp 'image-transform-reset-to-original))
+      :action (lambda () (image-transform-reset-to-original)))
+
+     (init-dwim-make-action
+      :title "Rotate image clockwise"
+      :description "Rotate the image 90° clockwise"
+      :category "Image"
+      :priority 75
+      :predicate (lambda () (fboundp 'image-rotate))
+      :action (lambda () (image-rotate)))
+
+     (init-dwim-make-action
+      :title "Rotate image counter-clockwise"
+      :description "Rotate the image 90° counter-clockwise"
+      :category "Image"
+      :priority 73
+      :predicate (lambda () (fboundp 'image-rotate))
+      :action (lambda () (image-rotate -1)))
+
+     (init-dwim-make-action
+      :title "Copy image file path"
+      :description "Copy the path of the displayed image file"
+      :category "Image"
+      :priority 68
+      :predicate (lambda () (buffer-file-name))
+      :action (lambda ()
+                (kill-new (buffer-file-name))
+                (message "Copied: %s" (buffer-file-name))))
+
+     (init-dwim-make-action
+      :title "Open image externally"
+      :description "Open the image in the system's default image viewer"
+      :category "Image"
+      :priority 65
+      :predicate (lambda () (buffer-file-name))
+      :action (lambda ()
+                (init-dwim--open-externally (buffer-file-name))))
+
+     (init-dwim-make-action
+      :title "Show image metadata"
+      :description "Display EXIF/image attributes in the minibuffer"
+      :category "Image"
+      :priority 60
+      :predicate (lambda ()
+                   (and (buffer-file-name)
+                        (fboundp 'image-get-display-property)))
+      :action (lambda ()
+                (let ((img (image-get-display-property)))
+                  (if img
+                      (message "%S" (cdr img))
+                    (message "No image display property found"))))))))
+
 ;;; ── Info reader ───────────────────────────────────────────────────────────
 
 (defun init-dwim-info-provider ()
@@ -10190,6 +11758,41 @@ is retained for compatibility but returns nil."
       :action (lambda () (org-table-delete-column)))
 
      (init-dwim-make-action
+      :title "Move column left"
+      :description "Move the current Org table column one position to the left"
+      :category "OrgTable"
+      :priority 72
+      :predicate (lambda () (fboundp 'org-table-move-column-left))
+      :action (lambda () (org-table-move-column-left)))
+
+     (init-dwim-make-action
+      :title "Move column right"
+      :description "Move the current Org table column one position to the right"
+      :category "OrgTable"
+      :priority 70
+      :predicate (lambda () (fboundp 'org-table-move-column-right))
+      :action (lambda () (org-table-move-column-right)))
+
+     (init-dwim-make-action
+      :title "Toggle formula debugger"
+      :description "Enable or disable the Org table formula debugger"
+      :category "OrgTable"
+      :priority 52
+      :predicate (lambda () (fboundp 'org-table-toggle-formula-debugger))
+      :action (lambda () (org-table-toggle-formula-debugger)))
+
+     (init-dwim-make-action
+      :title "Open CSV export and display"
+      :description "Export table to CSV and visit the file"
+      :category "OrgTable"
+      :priority 50
+      :predicate (lambda () (fboundp 'org-table-export))
+      :action (lambda ()
+                (let ((file (make-temp-file "org-table-" nil ".csv")))
+                  (org-table-export file "orgtbl-to-csv")
+                  (find-file-other-window file))))
+     
+     (init-dwim-make-action
       :title "Export table to CSV"
       :description "Save this Org table as a CSV file"
       :category "OrgTable"
@@ -10199,6 +11802,95 @@ is retained for compatibility but returns nil."
                 (let ((file (read-file-name "Export CSV to: " nil nil nil
                                             "table.csv")))
                   (org-table-export file "orgtbl-to-csv")))))))
+
+;;; ── Org Babel ─────────────────────────────────────────────────────────────
+
+(defun init-dwim-org-babel-provider ()
+  "Return actions for Org Babel source blocks."
+  (when (init-dwim--org-src-block-p)
+    (list
+     (init-dwim-make-action
+      :title "Execute source block"
+      :description "Evaluate the source block at point"
+      :category "Babel"
+      :priority 100
+      :predicate (lambda () (fboundp 'org-babel-execute-src-block))
+      :action (lambda () (org-babel-execute-src-block)))
+
+     (init-dwim-make-action
+      :title "Execute buffer source blocks"
+      :description "Execute all source blocks in the buffer"
+      :category "Babel"
+      :priority 90
+      :predicate (lambda () (fboundp 'org-babel-execute-buffer))
+      :action (lambda () (org-babel-execute-buffer)))
+
+     (init-dwim-make-action
+      :title "Tangle file"
+      :description "Extract all source blocks to their target files"
+      :category "Babel"
+      :priority 85
+      :predicate (lambda () (fboundp 'org-babel-tangle))
+      :action (lambda () (org-babel-tangle)))
+
+     (init-dwim-make-action
+      :title "Detangle file"
+      :description "Propagate changes from tangled files back into the Org buffer"
+      :category "Babel"
+      :priority 75
+      :predicate (lambda () (fboundp 'org-babel-detangle))
+      :action (lambda () (org-babel-detangle)))
+
+     (init-dwim-make-action
+      :title "Edit source block in dedicated buffer"
+      :description "Open the block at point in its native language buffer"
+      :category "Babel"
+      :priority 88
+      :predicate (lambda () (fboundp 'org-edit-src-code))
+      :action (lambda () (org-edit-src-code)))
+
+     (init-dwim-make-action
+      :title "Jump to named source block"
+      :description "Prompt for a named block and jump to it"
+      :category "Babel"
+      :priority 70
+      :predicate (lambda () (fboundp 'org-babel-goto-named-src-block))
+      :action (lambda () (call-interactively #'org-babel-goto-named-src-block)))
+
+     (init-dwim-make-action
+      :title "Remove block result"
+      :description "Delete the :RESULTS: drawer for the block at point"
+      :category "Babel"
+      :priority 65
+      :predicate (lambda () (fboundp 'org-babel-remove-result))
+      :action (lambda () (org-babel-remove-result)))
+
+     (init-dwim-make-action
+      :title "Copy block body"
+      :description "Copy the source code of the block to the kill ring"
+      :category "Babel"
+      :priority 60
+      :predicate (lambda () (fboundp 'org-babel-mark-block))
+      :action (lambda ()
+                (org-babel-mark-block)
+                (kill-new (buffer-substring-no-properties
+                           (region-beginning) (region-end)))
+                (deactivate-mark)
+                (message "Block body copied")))
+
+     (init-dwim-make-action
+      :title "Switch source block language"
+      :description "Change the language header of the block at point"
+      :category "Babel"
+      :priority 55
+      :action (lambda ()
+                (save-excursion
+                  (org-babel-goto-src-block-head)
+                  (let ((lang (read-string "Language: "
+                                           (org-element-property
+                                            :language (org-element-at-point)))))
+                    (when (re-search-forward "#\\+begin_src\\s-+\\(\\S-+\\)" nil t)
+                      (replace-match lang t t nil 1)))))))))
 
 ;;; ── Rectangle ────────────────────────────────────────────────────────────
 
@@ -10429,6 +12121,32 @@ is retained for compatibility but returns nil."
       :predicate (lambda () (fboundp 'org-agenda-filter-by-tag))
       :action (lambda () (call-interactively #'org-agenda-filter-by-tag)))
 
+     (init-dwim-make-action
+      :title "Set effort from agenda"
+      :description "Set an effort estimate for the entry at point"
+      :category "OrgAgenda"
+      :priority 73
+      :predicate (lambda () (fboundp 'org-agenda-set-effort))
+      :action (lambda () (call-interactively #'org-agenda-set-effort)))
+
+     (init-dwim-make-action
+      :title "Bulk action on marked"
+      :description "Apply a batch action to all agenda entries marked with 'm'"
+      :category "OrgAgenda"
+      :priority 68
+      :predicate (lambda () (fboundp 'org-agenda-bulk-action))
+      :action (lambda () (org-agenda-bulk-action)))
+
+     (init-dwim-make-action
+      :title "Open agenda in new frame"
+      :description "Display this agenda view in a dedicated frame"
+      :category "OrgAgenda"
+      :priority 60
+      :action (lambda ()
+                (let ((buf (current-buffer)))
+                  (make-frame)
+                  (switch-to-buffer buf))))
+     
      (init-dwim-make-action
       :title "Toggle follow mode"
       :description "Auto-show the original heading when navigating the agenda"
@@ -10810,12 +12528,15 @@ is retained for compatibility but returns nil."
 ;;;; Provider registration
 
 (setq init-dwim-providers
-      '(;; Session, global navigation, and completion helpers.
-        init-dwim-session-provider
+      '(;; Global navigation, and completion helpers.
         init-dwim-consult-provider
         init-dwim-embark-provider
         init-dwim-transient-provider
 
+        ;; Session and process management.
+        init-dwim-session-provider
+        init-dwim-proced-provider
+        
         ;; Selection, point context, and editing objects.
         init-dwim-region-provider
         init-dwim-expand-region-provider
@@ -10839,6 +12560,7 @@ is retained for compatibility but returns nil."
         init-dwim-text-provider
         init-dwim-markdown-provider
         init-dwim-markdown-table-provider
+        init-dwim-org-babel-provider
         init-dwim-spelling-provider
         init-dwim-snippet-provider
         init-dwim-yasnippet-maintenance-provider
@@ -10849,10 +12571,10 @@ is retained for compatibility but returns nil."
 
         ;; Files, buffers, windows, tabs, and sessions.
         init-dwim-buffer-provider
+        init-dwim-ibuffer-provider
         init-dwim-window-provider
         init-dwim-tab-bar-provider
         init-dwim-dired-provider
-        init-dwim-history-provider
         init-dwim-focus-provider
         init-dwim-security-provider
         init-dwim-tramp-provider
@@ -10862,6 +12584,7 @@ is retained for compatibility but returns nil."
         init-dwim-eww-provider
         init-dwim-info-provider
         init-dwim-man-provider
+        init-dwim-image-provider
         
         ;; Projects, version control, diffs, and tasks.
         init-dwim-project-provider
@@ -10893,18 +12616,25 @@ is retained for compatibility but returns nil."
         init-dwim-ruby-provider
         init-dwim-sh-provider
         init-dwim-json-yaml-provider
+        init-dwim-csv-provider
         init-dwim-restclient-provider
         init-dwim-docker-provider
 
         ;; Shells, terminals, output buffers, and search state.
         init-dwim-output-buffer-provider
+        init-dwim-compile-provider
         init-dwim-occur-provider
         init-dwim-comint-provider
+        init-dwim-eshell-buffer-provider
         init-dwim-shell-provider
         init-dwim-eat-provider
         init-dwim-isearch-provider
         init-dwim-corfu-provider
 
+        ;; History and undo
+        init-dwim-history-provider
+        init-dwim-vundo-provider
+        
         ;; AI integrations.
         init-dwim-ai-provider
         init-dwim-gptel-provider
