@@ -96,6 +96,7 @@
 (use-package orderless
   :demand t
   :custom
+  (orderless-matching-styles '(orderless-literal orderless-regexp orderless-initialism))
   (completion-styles '(orderless basic))
   (completion-category-defaults nil)
   (completion-category-overrides '((file (styles partial-completion)))))
