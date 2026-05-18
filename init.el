@@ -301,11 +301,16 @@
   :straight nil
   :defer t
   :custom
+  (dired-kill-when-opening-new-dired-buffer t)
   (dired-dwim-target t)
   (dired-recursive-copies 'always)
   (dired-recursive-deletes 'top)
   :config
-  (evil-set-initial-state 'dired-mode 'emacs))
+  (evil-set-initial-state 'dired-mode 'emacs)
+  (define-key dired-mode-map [remap evil-backward-char] 'dired-up-directory)
+  (define-key dired-mode-map [remap evil-forward-char] 'dired-find-file)
+  (define-key dired-mode-map [remap evil-previous-line] 'dired-previous-line)
+  (define-key dired-mode-map [remap evil-next-line] 'dired-next-line))
 
 (use-package diredfl
   :hook (dired-mode . diredfl-mode))
