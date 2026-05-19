@@ -133,6 +133,7 @@
         evil-want-keybinding nil
         evil-want-C-u-scroll t
         evil-respect-visual-line-mode t
+        evil-want-C-i-jump nil
         evil-undo-system 'undo-redo)
   :config
   (evil-mode 1)
@@ -277,6 +278,16 @@
       "* TODO %?\n  %U\n  %a")
      ("n" "Note" entry (file+headline org-default-notes-file "Notes")
       "* %?\n  %U\n  %a"))))
+
+;; In your init
+(use-package evil-org
+  :after org
+  :hook (org-mode . evil-org-mode)
+  :config
+  (evil-org-set-key-theme '(navigation insert textobjects additional calendar))
+  ;; For agenda
+  (require 'evil-org-agenda)
+  (evil-org-agenda-set-keys))
 
 (use-package org-modern
   :after org
@@ -12311,6 +12322,24 @@ is retained for compatibility but returns nil."
   (evil-set-leader '(normal visual motion emacs) (kbd "SPC"))
   (evil-define-key '(normal visual motion emacs) 'global
     (kbd "<leader> SPC") #'init-dwim))
+
+(setq initial-major-mode 'org-mode)
+(setq initial-scratch-message nil)   ; Disable default message
+
+(defun init-dwim-setup-scratch-buffer ()
+  "Load content from file into *scratch* and place cursor at the beginning."
+  (let ((scratch-file (expand-file-name "scratch.org" user-emacs-directory))
+        (scratch-buf (get-buffer-create "*scratch*")))
+    (with-current-buffer scratch-buf
+      (erase-buffer)
+      (if (file-exists-p scratch-file)
+          (insert-file-contents scratch-file)
+        (insert "#+TITLE: My Scratch Buffer\n\n"))
+      (goto-char (point-min))     ; ← This moves the cursor to the start
+      (org-mode))))
+
+;; Run this after Emacs has finished initializing
+(add-hook 'after-init-hook 'init-dwim-setup-scratch-buffer)
 
 (provide 'init)
 ;;; init.el ends here

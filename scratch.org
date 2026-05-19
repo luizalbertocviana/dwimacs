@@ -1,0 +1,413 @@
+#+TITLE: dwimacs
+#+STARTUP: overview
+#+STARTUP: hideblocks
+
+* Welcome to dwimacs
+  :PROPERTIES:
+  :VISIBILITY: children
+  :END:
+
+  One keybinding to rule them all: =SPC SPC= (or =M-x init-dwim=).
+
+  Press =SPC SPC= at any moment and a context-aware menu will appear,
+  offering only the actions that make sense /right now/ — based on your
+  cursor position, active region, major mode, project, and installed
+  packages.  No prefixes to memorize.  No modal sub-menus to navigate.
+  Just press it and read what appears.
+
+* The DWIM command
+  :PROPERTIES:
+  :VISIBILITY: children
+  :END:
+
+** How it works
+
+   When you press =SPC SPC=, dwim:
+
+   1. Queries every registered *provider* for candidate actions.
+   2. Each provider inspects the current context (point, region, mode,
+      buffer, project…) and returns only the actions that apply.
+   3. All candidates are merged, sorted by priority, and presented via
+      Vertico + Orderless in a =completing-read= prompt annotated by
+      Marginalia.
+   4. You pick one (fuzzy-type to narrow) and it runs.
+
+** Useful companions
+
+   | Key / Command              | What it does                                        |
+   |----------------------------+-----------------------------------------------------|
+   | =SPC SPC=                    | Open the DWIM menu                                  |
+   | =M-x init-dwim-explain=      | Show debug log: which actions were offered/rejected |
+   | =M-x init-dwim-for-category= | Filter the menu to a single category                |
+
+** Filtering by category
+
+   Every action belongs to a category (=Buffer=, =Git=, =LSP=, =Org=…).
+   =M-x init-dwim-for-category= lets you jump straight into one category,
+   which is handy once you know roughly what you want.
+
+* Navigation & search
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+  These actions surface whenever the Consult / Embark providers fire.
+  They are almost always available.
+
+  | What you want                       | How to get it via DWIM              |
+  |-------------------------------------+-------------------------------------|
+  | Jump to any line in this file       | category =Consult= → /Go to line/   |
+  | Search inside this project          | category =Consult= → /Ripgrep/      |
+  | Switch to a recent file             | category =Consult= → /Recent files/ |
+  | Switch buffer                       | category =Consult= → /Switch buffer/|
+  | Act on any candidate with Embark    | category =Embark= → /Act on …/      |
+
+  *Tip:* Consult previews update as you move through the candidate list.
+  The preview is debounced to 250 ms so it doesn't flicker.
+
+* Evil & editing
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+  The setup runs evil-mode with =SPC= as the leader key in normal,
+  visual, motion, and emacs states.  Emacs state also binds the usual
+  =hjkl= keys so you can navigate without switching states.
+
+** Motions you already know
+
+   Evil normal-state motions, operators (=d=, =c=, =y=…), and
+   text-objects all work.  evil-surround adds =ys=, =cs=, =ds= for
+   surrounding pairs.
+
+** Selections and regions
+
+   Mark a region (visual mode or =C-SPC=) and then press =SPC SPC=.
+   The *Region* and *Expand-region* providers fire and offer actions like:
+
+   - Upcase / downcase / titlecase the selection
+   - =sort-lines=, =align-regexp=, =fill-region=
+   - Comment / uncomment
+   - Send to shell, eval, or pipe through a command
+   - Expand or contract the selection by semantic unit (expand-region)
+
+** Numbers at point
+
+   With point on a number, DWIM offers increment, decrement, and format
+   conversions (decimal ↔ hex ↔ binary).
+
+** Rectangles
+
+   Mark a rectangular region with =C-x SPC= (rectangle-mark-mode), then
+   =SPC SPC= for rectangle operations: insert, delete, string-replace,
+   copy, and yank.
+
+* Completion & snippets
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+  In-buffer completion is handled by Corfu (popup) backed by Cape sources
+  (=cape-file=, =cape-dabbrev=, plus LSP when Eglot is active).
+  Completion starts automatically; =TAB= / =S-TAB= cycle candidates.
+
+  Snippets come from yasnippet + yasnippet-snippets.  The *Snippet*
+  provider in DWIM offers:
+
+  - /Expand snippet at point/ — same as =TAB= but surfaced through DWIM
+  - /Insert snippet/ — browse and insert any snippet for the current mode
+  - /New snippet/ — create a snippet for this mode
+  - /Reload snippets/ — pick up edits without restarting
+
+* Files, buffers & windows
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+** Buffer management
+
+   =SPC SPC= in any buffer → category =Buffer=:
+   - Rename, kill, clone, revert, read-only toggle
+   - Open the file in Dired
+   - Copy buffer file path to kill-ring
+
+   For bulk buffer operations open IBuffer first (=M-x ibuffer=), then
+   =SPC SPC= → category =IBuffer= for mark/delete/save operations.
+
+** Window management
+
+   Category =Window= gives you split, delete, balance, rotate, and
+   winner-mode undo (=winner-undo= / =winner-redo=).
+
+** Dired
+
+   Open Dired (=M-x dired= or DWIM → =Dired=).  In a Dired buffer,
+   =hjkl= move up/down and in/out of directories.  =SPC SPC= → category
+   =Dired= for mark, copy, move, chmod, and compress operations.
+
+** Tramp
+
+   Category =Tramp= provides shortcuts to open remote files via SSH,
+   sudo, or Docker exec without typing the full =/ssh:host:/path= syntax.
+
+* Projects & version control
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+** Projects (Projectile)
+
+   Projectile searches =~/src=, =~/work=, =~/projects=, and =~/git= for
+   projects.  Within a project, =SPC SPC= → category =Project=:
+
+   - Switch project, find file in project, run project shell
+   - Open the project's =NOTES.org= (set via =init-dwim-project-notes-file=)
+   - Kill all project buffers
+
+** Git (Magit + git-gutter)
+
+   =SPC SPC= → category =Git= or =Magit=:
+   - =magit-status= — the full Magit dashboard
+   - Stage hunk at point, revert hunk (git-gutter)
+   - Show log, blame, diff for the current file
+   - Push, pull, fetch
+
+   In an smerge conflict buffer, category =Smerge= offers keep-mine,
+   keep-other, keep-all, and next/previous conflict navigation.
+
+** Search & replace across files
+
+   - =SPC SPC= → =Consult= → /Ripgrep in project/ — live search
+   - After getting results in a grep/rg buffer, category =Wgrep= lets
+     you make the results buffer editable, batch-edit matches, and save
+     with =C-c C-c=.
+
+* Programming
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+** LSP via Eglot
+
+   Start Eglot with =M-x eglot= (or DWIM → category =LSP=).  Once
+   active, =SPC SPC= surfaces:
+
+   | Category   | Notable actions                                    |
+   |------------+----------------------------------------------------|
+   | =LSP=      | Find definition, references, implementation        |
+   | =LSP=      | Rename symbol, code actions, format buffer         |
+   | =LSP=      | Restart server, shutdown server                    |
+   | =Xref=     | Jump back (=xref-go-back=), jump forward           |
+
+** Diagnostics (Flymake)
+
+   Flymake runs on save (and 500 ms after last change).  Category
+   =Diagnostics= in DWIM offers next/previous error, show error at
+   point, and list all diagnostics in a buffer.
+
+** Formatting (Apheleia)
+
+   Apheleia formats on save automatically using the right formatter per
+   language.  DWIM → =Format= → /Format buffer/ runs it on demand.
+
+** Debugging (DAP)
+
+   With =dap-mode= active (=M-x dap-mode=), category =DAP= exposes
+   start/stop session, set breakpoint at point, step over/in/out,
+   continue, and inspect locals.
+
+** Language-specific actions
+
+   These categories appear only when the relevant major mode or package
+   is active:
+
+   | Language     | Category       | Sample actions                      |
+   |--------------+----------------+-------------------------------------|
+   | Emacs Lisp   | =Elisp=        | eval-defun, macroexpand, edebug     |
+   | Python       | =Python=       | pytest run, pyvenv activate         |
+   | Clojure      | =Clojure=      | cider-jack-in, eval ns/defun        |
+   | Common Lisp  | =Common Lisp=  | sly-connect, compile file           |
+   | Rust         | =Rust=         | cargo build/test/run/clippy         |
+   | Go           | =Go=           | go test, go run, gofmt              |
+   | TypeScript   | =TypeScript=   | ts-node, jest test                  |
+   | JavaScript   | =JavaScript=   | node REPL, jest test                |
+   | Ruby         | =Ruby=         | rspec, inf-ruby REPL                |
+   | Shell        | =Shell=        | run script, check with shellcheck   |
+   | JSON / YAML  | =Data=         | pretty-print, validate              |
+   | Docker       | =Docker=       | build image, run container          |
+   | REST         | =REST=         | send request (restclient-mode)      |
+
+* Org mode
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+  This buffer /is/ an Org buffer, so the =Org= and related providers
+  are active right now.  Try =SPC SPC= here.
+
+** Core Org actions
+
+   Category =Org= offers (among others):
+
+   - Insert heading, subheading, or TODO
+   - Promote / demote heading (shift the tree level)
+   - Move subtree up / down
+   - Set TODO state, set tags, set deadline or scheduled date
+   - Archive subtree, refile subtree
+   - Toggle checkbox, toggle folding
+   - Narrow to subtree
+
+** Org tables
+
+   Place point inside a table → category =Org Table=:
+   - Insert / delete row or column
+   - Sort table by column
+   - Align table (also happens automatically on =TAB=)
+   - Sum column, evaluate formula
+
+** Org Babel
+
+   Inside a =#+BEGIN_SRC= block → category =Babel=:
+   - Execute block (=C-c C-c= equivalent)
+   - Tangle all blocks to files
+   - Switch to edit mode in a dedicated buffer
+
+** Org Agenda
+
+   Category =Org Agenda= (always available):
+   - Open the agenda for today / this week
+   - Capture a quick task or note (org-capture)
+   - Clock in / clock out
+
+** Quick notes & journal
+
+   Category =Note= (always available):
+   - Append a timestamped entry to =journal.org=
+     (default: =~/.emacs.d/journal.org=)
+   - Capture to =inbox.org= via org-capture templates =t= (Task)
+     and =n= (Note)
+
+* AI integration
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+  Category =AI= and =GPTel= surface when gptel or ellama are installed.
+  The system prompt is:
+
+  #+BEGIN_QUOTE
+  You are a senior engineer helping inside Emacs. Be concise and actionable.
+  #+END_QUOTE
+
+  With a region selected, DWIM → =AI= offers /Ask AI about region/ —
+  the selected text is sent as context.
+
+  gptel buffers run in =org-mode= so you can use headings and code
+  blocks to structure your conversation.
+
+* Highlights, registers & bookmarks
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+** Highlight
+
+   =SPC SPC= → category =Highlight=:
+   - Highlight / unhighlight the symbol at point (hi-lock)
+   - Highlight an arbitrary regexp
+   - Jump to next / previous occurrence of the highlighted symbol
+   - Save highlight patterns as comments in the file
+
+** Registers
+
+   Category =Register= lets you store and recall point positions,
+   window configurations, and text snippets without opening a register
+   browser.
+
+** Bookmarks
+
+   Category =Bookmark= offers jump-to, set, delete, and list operations.
+   The =Bookmark Context= sub-provider adds context-sensitive "bookmark
+   this heading / function / line" shortcuts.
+
+* Shells & terminals
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+  | Category | Buffer type             | Sample actions                 |
+  |----------+-------------------------+--------------------------------|
+  | =Shell=    | any buffer              | Open eshell / eat / shell here |
+  | =Eshell=   | eshell buffer           | Clear, history, cd to last dir |
+  | =Terminal= | eat buffer              | Rename session, send EOF       |
+  | =Compile=  | compilation-mode buffer | Recompile, kill, next error    |
+  | =Comint=   | any comint buffer       | Clear, send input, history     |
+
+* Help & package management
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+** Help
+
+   Category =Help= is always available:
+   - Describe function, variable, key, mode
+   - Open the Emacs manual at a topic (info)
+   - Open a man page
+
+   The =Info= provider adds navigation actions when you are inside an
+   Info buffer (next/previous node, history back/forward, search).
+
+** Packages
+
+   Category =Package= wraps straight.el and use-package operations:
+   - Pull (update) a package
+   - Rebuild a package
+   - Check for outdated packages
+
+** Macros
+
+   Category =Macro= surfaces when a macro is being recorded or one
+   has been defined:
+   - Start / stop / apply keyboard macro
+   - Name and save a macro
+
+* Tips
+  :PROPERTIES:
+  :VISIBILITY: folded
+  :END:
+
+  - *Narrow the menu fast* — Orderless lets you type words in any order
+    and also supports initialism matching, so =lsp rd= finds =LSP:
+    Rename definition= and =lsp def= finds =LSP: Find definition=.
+
+  - *Debug a missing action* — =M-x init-dwim-explain= shows exactly
+    which providers ran, how many actions each returned, and which were
+    rejected and why.
+
+  - *Disable a noisy provider* — add its symbol to
+    =init-dwim-disabled-providers=, e.g.:
+    #+BEGIN_SRC emacs-lisp
+    (add-to-list 'init-dwim-disabled-providers 'init-dwim-calc-provider)
+    #+END_SRC
+
+  - *which-key* pops up after 0.5 s if you pause mid-chord, so any
+    partial key sequence reveals its continuations.
+
+  - *winner-mode* is active: =C-c <left>= / =C-c <right>= undo and redo
+    window configuration changes.
+
+  - *vundo* gives you a visual undo tree: =SPC SPC= → category =Undo= →
+    /Visual undo tree/ (or =M-x vundo=).
+
+  - *writeroom-mode* and *olivetti-mode* are installed for distraction-
+    free writing; DWIM → category =Focus= toggles them.
+
+  - *recentf*, *savehist*, and *save-place* are on by default, so files,
+    minibuffer history, and cursor positions all persist across restarts.
+
+#+BEGIN_COMMENT
+This file is the initial scratch buffer for dwimacs.
+Edit freely — it is never saved automatically.
+To make permanent notes use M-x org-capture (or SPC SPC → Note).
+#+END_COMMENT
