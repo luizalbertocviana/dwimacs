@@ -395,18 +395,18 @@ search lines'. Both are equivalent to running the code below
   :VISIBILITY: folded
   :END:
 
-** Help  (=SPC SPC= =Help=, always available)
+** Help  (=SPC SPC= =Emacs=, always available)
 
    Describe function, variable, key, or mode.  Open the Emacs manual.
    Open a man page.  Inside an Info buffer the =Info= provider adds
    next/previous node, history, and search.
 
-** Packages  (=SPC SPC= → =Package=)
+** Packages  (=SPC SPC= =Package=)
 
    Pull (update), rebuild, check for outdated — straight.el operations
    without leaving the keyboard.
 
-** Macros  (=SPC SPC= → =Macro=)
+** Macros  (=SPC SPC= =Macro=)
 
    Start / stop / apply keyboard macro.  Name and save a macro.
 
