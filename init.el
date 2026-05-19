@@ -112,7 +112,13 @@
   (consult-preview-key '(:debounce 0.25 any)))
 
 (use-package embark
-  :defer t)
+  :defer t
+  :init
+  ;; Show Embark key bindings in a nice help buffer
+  (setq prefix-help-command #'embark-prefix-help-command)
+  ;; Make sure embark-act works nicely inside the minibuffer
+  :bind (:map minibuffer-local-map
+              ("C-." . embark-act)))  ;; Same key inside minibuffer
 
 (use-package embark-consult
   :demand t)
