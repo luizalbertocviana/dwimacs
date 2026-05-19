@@ -405,9 +405,22 @@
 
 (use-package hide-mode-line :defer t)
 
-(use-package csv-mode :defer t)
 (use-package pyvenv :defer t)
 (use-package consult-git-log-grep :defer t)
+
+;; csv / tsv editing
+(use-package csv-mode
+  :defer t
+  :mode (("\\.csv\\'" . csv-mode)
+         ("\\.tsv\\'" . tsv-mode))
+  :custom
+  ;; Accept the separators you actually use.
+  (csv-separators '("," "\t" ";" "|"))
+  :hook
+  ;; Try to detect the delimiter when opening a file.
+  (csv-mode . csv-guess-set-separator)
+  ;; Keep fields aligned so tables are easier to read.
+  (csv-mode . csv-align-mode))
 
 (require 'cl-lib)
 (require 'subr-x)
