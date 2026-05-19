@@ -69,7 +69,7 @@
 
 ** Step 4 — open the debug log
 
-   =M-x init-dwim-explain= collects all actions and writes a log of
+   =SPC SPC explain= collects all actions and writes a log of
    every provider that ran, what it returned, and what was rejected and
    why.  Useful for understanding why an action is or is not appearing.
 
@@ -116,8 +116,7 @@
    | Command                    | What it does                          |
    |----------------------------+---------------------------------------|
    | =SPC SPC=                    | The DWIM menu                         |
-   | =M-x init-dwim-explain=      | Debug log: offered / rejected actions |
-   | =M-x init-dwim-for-category= | Filter menu to one category           |
+   | =SPC SPC explain=            | Debug log: offered / rejected actions |
 
 * Navigation & search
   :PROPERTIES:
@@ -126,15 +125,7 @@
 
   These actions come from the Consult and Embark providers and are
   available in virtually every buffer.
-
-  | What you want                  | DWIM path                    |
-  |--------------------------------+------------------------------|
-  | Jump to any line here          | =Consult= → /Go to line/         |
-  | Live search in this project    | =Consult= → /Ripgrep in project/ |
-  | Switch to a recent file        | =Consult= → /Recent files/       |
-  | Switch buffer                  | =Consult= → /Switch buffer/      |
-  | Act on a candidate with Embark | =Embark= → /Act on …/            |
-
+  
   *Tip — live preview:* as you move through the Consult candidate list,
   the target buffer previews in the background (debounced 250 ms).
 
@@ -185,8 +176,10 @@ search lines'. Both are equivalent to running the code below
 
 ** Rectangles
 
-   =C-x SPC= enters rectangle-mark-mode.  =SPC SPC= then offers insert,
-   delete, string-replace, copy, and yank for the marked rectangle.
+   In Evil, visual state (=v=) defines an Emacs rectangle using the columns of the
+   first and last positions of the selection across the spanned lines. =SPC SPC=
+   then offers insert, delete, string-replace, copy, and yank for the marked
+   rectangle.
 
 * Completion & snippets
   :PROPERTIES:
@@ -221,17 +214,18 @@ search lines'. Both are equivalent to running the code below
    =SPC SPC= → =Buffer=: rename, kill, clone, revert, toggle read-only,
    open in Dired, copy file path.
 
-   For bulk operations: =M-x ibuffer=, then =SPC SPC= → =IBuffer=.
+   For bulk operations: =SPC SPC ibuffer= to enter ibuffer, then =SPC SPC= =ibuffer=
+   for ibuffer specific actions.
 
 ** Windows
 
-   =SPC SPC= → =Window=: split, delete, balance, rotate, and winner-undo
-   / winner-redo (=C-c <left>= / =C-c <right>=).
+   =SPC SPC= =Window=: split, delete, balance, rotate, and winner-undo /
+   winner-redo.
 
 ** Dired
 
-   In a Dired buffer =hjkl= navigate the directory tree (=h= goes up,
-   =l= opens).  =SPC SPC= → =Dired= for mark, copy, move, chmod, compress.
+   In a Dired buffer =hjkl= navigate the directory tree (=h= goes up, =l= opens). =SPC
+   SPC= =Dired= for mark, copy, move, chmod, compress.
 
 ** Try: open Dired here
 
@@ -247,23 +241,17 @@ search lines'. Both are equivalent to running the code below
 ** Projects
 
    Projectile searches =~/src=, =~/work=, =~/projects=, and =~/git=.
-   Inside a project, =SPC SPC= → =Project=:
+   Inside a project, =SPC SPC= =Project=:
    switch project, find file, run shell, open =NOTES.org=, kill all
    project buffers.
 
 ** Git
 
-   =SPC SPC= → =Git= / =Magit=: magit-status, stage hunk, revert hunk,
+   =SPC SPC= =Git= / =Magit=: magit-status, stage hunk, revert hunk,
    log, blame, diff, push, pull, fetch.
 
    In an smerge conflict buffer → =Smerge=: keep-mine, keep-other,
    keep-all, next/previous conflict.
-
-** Search & replace across files
-
-   =SPC SPC= → =Consult= → /Ripgrep in project/ for live search.
-   In the results buffer, =SPC SPC= → =Wgrep= to make it editable,
-   batch-replace across files, and save with =C-c C-c=.
 
 * Programming
   :PROPERTIES:
@@ -274,41 +262,41 @@ search lines'. Both are equivalent to running the code below
 
    =M-x eglot= starts the language server.  =SPC SPC= then surfaces:
 
-   | Category     | Actions                                          |
-   |--------------+--------------------------------------------------|
-   | =LSP=        | Find definition / references / implementation   |
-   | =LSP=        | Rename symbol, code actions, format buffer      |
-   | =LSP=        | Restart / shutdown server                       |
-   | =Xref=       | Jump back, jump forward                         |
-   | =Diagnostics=| Next / previous error, list all, show at point  |
+   | Category    | Actions                                        |
+   |-------------+------------------------------------------------|
+   | =LSP=         | Find definition / references / implementation  |
+   | =LSP=         | Rename symbol, code actions, format buffer     |
+   | =LSP=         | Restart / shutdown server                      |
+   | =Xref=        | Jump back, jump forward                        |
+   | =Diagnostics= | Next / previous error, list all, show at point |
 
 ** Formatting
 
-   Apheleia formats on save.  =SPC SPC= → =Format= → /Format buffer/
+   Apheleia formats on save.  =SPC SPC= =Format= → /Format buffer/
    runs it on demand.
 
 ** Debugging
 
-   =M-x dap-mode= → =SPC SPC= → =DAP=: start/stop session, set
+   =M-x dap-mode= → =SPC SPC= =DAP=: start/stop session, set
    breakpoint, step over/in/out, continue, inspect locals.
 
 ** Languages
 
-   | Language    | Category      | Sample actions                    |
-   |-------------+---------------+-----------------------------------|
-   | Emacs Lisp  | =Elisp=       | eval-defun, macroexpand, edebug   |
-   | Python      | =Python=      | pytest, pyvenv activate           |
-   | Clojure     | =Clojure=     | cider-jack-in, eval ns/defun      |
-   | Common Lisp | =Common Lisp= | sly-connect, compile file         |
-   | Rust        | =Rust=        | cargo build/test/run/clippy       |
-   | Go          | =Go=          | go test, go run, gofmt            |
-   | TypeScript  | =TypeScript=  | ts-node, jest test                |
-   | JavaScript  | =JavaScript=  | node REPL, jest test              |
-   | Ruby        | =Ruby=        | rspec, inf-ruby REPL              |
-   | Shell       | =Shell=       | run script, shellcheck            |
-   | JSON / YAML | =Data=        | pretty-print, validate            |
-   | Docker      | =Docker=      | build image, run container        |
-   | REST        | =REST=        | send request (restclient-mode)    |
+   | Language    | Category    | Sample actions                  |
+   |-------------+-------------+---------------------------------|
+   | Emacs Lisp  | =Elisp=       | eval-defun, macroexpand, edebug |
+   | Python      | =Python=      | pytest, pyvenv activate         |
+   | Clojure     | =Clojure=     | cider-jack-in, eval ns/defun    |
+   | Common Lisp | =Common Lisp= | sly-connect, compile file       |
+   | Rust        | =Rust=        | cargo build/test/run/clippy     |
+   | Go          | =Go=          | go test, go run, gofmt          |
+   | TypeScript  | =TypeScript=  | ts-node, jest test              |
+   | JavaScript  | =JavaScript=  | node REPL, jest test            |
+   | Ruby        | =Ruby=        | rspec, inf-ruby REPL            |
+   | Shell       | =Shell=       | run script, shellcheck          |
+   | JSON / YAML | =Data=        | pretty-print, validate          |
+   | Docker      | =Docker=      | build image, run container      |
+   | REST        | =REST=        | send request (restclient-mode)  |
 
 * Org mode
   :PROPERTIES:
@@ -317,7 +305,7 @@ search lines'. Both are equivalent to running the code below
 
   This buffer is Org, so all Org providers are live right now.
 
-** Core actions  (=SPC SPC= → =Org=)
+** Core actions  (=SPC SPC= =Org=)
 
    Insert heading / TODO, promote / demote, move subtree up/down,
    set TODO state / tags / deadline, archive, refile, toggle checkbox,
@@ -339,11 +327,11 @@ search lines'. Both are equivalent to running the code below
 
    Execute block, tangle all blocks, edit in dedicated buffer.
 
-** Agenda  (=SPC SPC= → =Org Agenda=)
+** Agenda  (=SPC SPC= =Org Agenda=)
 
    Open agenda for today / this week, capture task or note, clock in/out.
 
-** Quick notes  (=SPC SPC= → =Note=)
+** Quick notes  (=SPC SPC= =Note=)
 
    Append a timestamped entry to =journal.org=, or capture to
    =inbox.org= with templates =t= (Task) and =n= (Note).
@@ -358,7 +346,7 @@ search lines'. Both are equivalent to running the code below
   :VISIBILITY: folded
   :END:
 
-  =SPC SPC= → =AI= or =GPTel= when gptel / ellama are installed.
+  =SPC SPC= =AI= or =GPTel= when gptel / ellama are installed.
 
   The active system prompt:
   #+BEGIN_QUOTE
@@ -374,17 +362,17 @@ search lines'. Both are equivalent to running the code below
   :VISIBILITY: folded
   :END:
 
-** Highlight  (=SPC SPC= → =Highlight=)
+** Highlight  (=SPC SPC= =Highlight=)
 
    Highlight / unhighlight symbol at point, highlight regexp, jump to
    next / previous occurrence, save patterns as file comments.
 
-** Registers  (=SPC SPC= → =Register=)
+** Registers  (=SPC SPC= =Register=)
 
    Store and recall point positions, window configurations, and text
    snippets — without a register browser.
 
-** Bookmarks  (=SPC SPC= → =Bookmark=)
+** Bookmarks  (=SPC SPC= =Bookmark=)
 
    Jump-to, set, delete, list.  The =Bookmark Context= sub-provider
    adds "bookmark this heading / function / line" shortcuts.
@@ -394,25 +382,20 @@ search lines'. Both are equivalent to running the code below
   :VISIBILITY: folded
   :END:
 
-  | Category   | Buffer type              | Sample actions                 |
-  |------------+--------------------------+--------------------------------|
-  | =Shell=    | any buffer               | Open eshell / eat / shell here |
-  | =Eshell=   | eshell buffer            | Clear, history, cd to last dir |
-  | =Terminal= | eat buffer               | Rename session, send EOF       |
-  | =Compile=  | compilation-mode buffer  | Recompile, kill, next error    |
-  | =Comint=   | any comint buffer        | Clear, send input, history     |
-
-  #+BEGIN_SRC emacs-lisp
-  ;; Open an eshell.
-  (eshell)
-  #+END_SRC
+  | Category | Buffer type             | Sample actions                 |
+  |----------+-------------------------+--------------------------------|
+  | =Shell=    | any buffer              | Open eshell / eat / shell here |
+  | =Eshell=   | eshell buffer           | Clear, history, cd to last dir |
+  | =Terminal= | eat buffer              | Rename session, send EOF       |
+  | =Compile=  | compilation-mode buffer | Recompile, kill, next error    |
+  | =Comint=   | any comint buffer       | Clear, send input, history     |
 
 * Help & packages
   :PROPERTIES:
   :VISIBILITY: folded
   :END:
 
-** Help  (=SPC SPC= → =Help=, always available)
+** Help  (=SPC SPC= =Help=, always available)
 
    Describe function, variable, key, or mode.  Open the Emacs manual.
    Open a man page.  Inside an Info buffer the =Info= provider adds
