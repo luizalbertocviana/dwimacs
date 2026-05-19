@@ -763,6 +763,13 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim-extra--prettier-format-file ()
+  "Format the current file with prettier or apheleia."
+  (if (fboundp 'apheleia-format-buffer)
+      (apheleia-format-buffer)
+    (compile (format "prettier --write %s"
+                     (shell-quote-argument (buffer-file-name))))))
+
 (defun init-dwim--ibuffer-buffer-p ()
   "Return non-nil when the current buffer is an IBuffer buffer."
   (derived-mode-p 'ibuffer-mode))
@@ -1129,33 +1136,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
               (user-error "No title found"))))
       (kill-buffer buffer))))
 
-(defun init-dwim--send-region-to-repl (beg end)
-  "Send region from BEG to END to a suitable REPL."
-  (cond
-   ((derived-mode-p 'emacs-lisp-mode)
-    (eval-region beg end))
-   ((and (derived-mode-p 'python-mode) (fboundp 'python-shell-send-region))
-    (python-shell-send-region beg end))
-   ((fboundp 'cider-eval-region)
-    (cider-eval-region beg end))
-   ((fboundp 'slime-eval-region)
-    (slime-eval-region beg end))
-   ((fboundp 'sly-eval-region)
-    (sly-eval-region beg end))
-   ((derived-mode-p 'comint-mode)
-    (comint-send-region (get-buffer-process (current-buffer)) beg end))
-   (t
-    (user-error "No suitable REPL/evaluator found"))))
-
-(defun init-dwim--repl-available-p ()
-  "Return non-nil when a region can likely be sent to a REPL/evaluator."
-  (or (derived-mode-p 'emacs-lisp-mode)
-      (and (derived-mode-p 'python-mode) (fboundp 'python-shell-send-region))
-      (fboundp 'cider-eval-region)
-      (fboundp 'slime-eval-region)
-      (fboundp 'sly-eval-region)
-      (derived-mode-p 'comint-mode)))
-
 (defun init-dwim--insert-markdown-link (url)
   "Replace URL at point with a Markdown link."
   (let* ((bounds (init-dwim--bounds-of-url-at-point))
@@ -1458,14 +1438,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :priority 78
         :predicate #'init-dwim--in-project-p
         :action (lambda () (init-dwim--project-search text)))
-
-       (init-dwim-make-action
-        :title "Send region to REPL/evaluator"
-        :description "Evaluate or send the selected text using a suitable REPL"
-        :category "Region"
-        :priority 75
-        :predicate #'init-dwim--repl-available-p
-        :action (lambda () (init-dwim--send-region-to-repl beg end)))
 
        (init-dwim-make-action
         :title "Send region to AI"
@@ -2262,16 +2234,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (init-dwim--project-search symbol)))
 
      (init-dwim-make-action
-      :title "Describe Elisp symbol"
-      :description "Describe the Elisp symbol at point"
-      :category "Symbol"
-      :priority 80
-      :predicate (lambda ()
-                   (and (derived-mode-p 'emacs-lisp-mode 'lisp-interaction-mode)
-                        (intern-soft symbol)))
-      :action (lambda () (describe-symbol (intern symbol))))
-
-     (init-dwim-make-action
       :title "Copy symbol"
       :description "Copy the symbol at point"
       :category "Symbol"
@@ -2292,21 +2254,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :priority 62
       :predicate (lambda () (fboundp 'highlight-symbol-at-point))
       :action (lambda () (highlight-symbol-at-point)))
-
-     (init-dwim-make-action
-      :title "Unhighlight all"
-      :description "Remove all highlights from the buffer"
-      :category "Symbol"
-      :priority 55
-      :predicate (lambda ()
-                   (or (fboundp 'unhighlight-regexp)
-                       (fboundp 'hi-lock-unface-buffer)))
-      :action (lambda ()
-                (cond
-                 ((fboundp 'hi-lock-unface-buffer)
-                  (hi-lock-unface-buffer (regexp-quote symbol)))
-                 (t
-                  (unhighlight-regexp (regexp-quote symbol))))))
 
      (init-dwim-make-action
       :title "Query-replace symbol"
@@ -2540,14 +2487,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (call-interactively #'org-clock-in)))
 
      (init-dwim-make-action
-      :title "Clock out"
-      :description "Clock out of the current task"
-      :category "Org"
-      :priority 79
-      :predicate (lambda () (fboundp 'org-clock-out))
-      :action (lambda () (call-interactively #'org-clock-out)))
-
-     (init-dwim-make-action
       :title "Copy link to heading"
       :description "Store a link to this heading and copy it"
       :category "Org"
@@ -2666,22 +2605,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :priority 48
       :predicate (lambda () (fboundp 'org-agenda))
       :action (lambda () (call-interactively #'org-agenda)))
-
-     (init-dwim-make-action
-      :title "Evaluate source block"
-      :description "Evaluate the Org Babel source block at point"
-      :category "Org"
-      :priority 86
-      :predicate (lambda () (fboundp 'org-babel-execute-src-block))
-      :action (lambda () (org-babel-execute-src-block)))
-
-     (init-dwim-make-action
-      :title "Tangle file"
-      :description "Tangle all source blocks in this Org file"
-      :category "Org"
-      :priority 60
-      :predicate (lambda () (fboundp 'org-babel-tangle))
-      :action (lambda () (org-babel-tangle)))
 
      (init-dwim-make-action
       :title "Toggle heading visibility"
@@ -2804,14 +2727,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (call-interactively #'org-insert-drawer)))
 
      (init-dwim-make-action
-      :title "Set effort estimate"
-      :description "Set the effort estimate for the heading at point"
-      :category "Org"
-      :priority 54
-      :predicate (lambda () (fboundp 'org-set-effort))
-      :action (lambda () (call-interactively #'org-set-effort)))
-
-     (init-dwim-make-action
       :title "Add footnote"
       :description "Insert a footnote reference and definition"
       :category "Org"
@@ -2861,17 +2776,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :category "Org"
       :priority 42
       :predicate (lambda () (fboundp 'org-capture))
-      :action (lambda () (call-interactively #'org-capture)))
-     
-     (init-dwim-make-action
-      :title "Recalculate table"
-      :description "Recalculate the Org table at point"
-      :category "Org"
-      :priority 61
-      :predicate (lambda ()
-                   (and (fboundp 'org-table-recalculate)
-                        (org-at-table-p)))
-      :action (lambda () (org-table-recalculate t))))))
+      :action (lambda () (call-interactively #'org-capture))))))
 
 ;;; ── Programming ──────────────────────────────────────────────────────────
 
@@ -2900,85 +2805,11 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                  (t (user-error "No nearest-test command available")))))
 
      (init-dwim-make-action
-      :title "Run project tests"
-      :description "Run test command for the current project"
-      :category "Code"
-      :priority 90
-      :predicate (lambda ()
-                   (or (fboundp 'projectile-test-project)
-                       (and (fboundp 'project-compile)
-                            (project-current nil))))
-      :action (lambda ()
-                (cond
-                 ((fboundp 'projectile-test-project)
-                  (call-interactively #'projectile-test-project))
-                 ((fboundp 'project-compile)
-                  (project-compile))
-                 (t
-                  (call-interactively #'compile)))))
-
-     (init-dwim-make-action
       :title "Format buffer"
       :description "Format or indent the current buffer"
       :category "Code"
       :priority 88
       :action #'init-dwim--format-buffer)
-
-     (init-dwim-make-action
-      :title "Open REPL"
-      :description "Open a REPL suitable for this buffer"
-      :category "Code"
-      :priority 80
-      :predicate (lambda ()
-                   (or (and (derived-mode-p 'emacs-lisp-mode)
-                            (fboundp 'ielm))
-                       (and (derived-mode-p 'python-mode)
-                            (fboundp 'run-python))
-                       (fboundp 'cider-jack-in)
-                       (fboundp 'sly)
-                       (fboundp 'slime)))
-      :action (lambda ()
-                (cond
-                 ((and (derived-mode-p 'emacs-lisp-mode) (fboundp 'ielm))
-                  (ielm))
-                 ((and (derived-mode-p 'python-mode) (fboundp 'run-python))
-                  (run-python))
-                 ((fboundp 'cider-jack-in)
-                  (cider-jack-in))
-                 ((fboundp 'sly)
-                  (sly))
-                 ((fboundp 'slime)
-                  (slime))
-                 (t
-                  (user-error "No REPL command available")))))
-
-     (init-dwim-make-action
-      :title "Evaluate expression or defun"
-      :description "Evaluate the expression, defun, or language-specific unit"
-      :category "Code"
-      :priority 78
-      :predicate (lambda ()
-                   (or (derived-mode-p 'emacs-lisp-mode 'lisp-interaction-mode)
-                       (and (derived-mode-p 'python-mode)
-                            (fboundp 'python-shell-send-defun))
-                       (fboundp 'cider-eval-defun-at-point)
-                       (fboundp 'slime-eval-defun)
-                       (fboundp 'sly-eval-defun)))
-      :action (lambda ()
-                (cond
-                 ((derived-mode-p 'emacs-lisp-mode 'lisp-interaction-mode)
-                  (call-interactively #'eval-defun))
-                 ((and (derived-mode-p 'python-mode)
-                       (fboundp 'python-shell-send-defun))
-                  (python-shell-send-defun))
-                 ((fboundp 'cider-eval-defun-at-point)
-                  (cider-eval-defun-at-point))
-                 ((fboundp 'sly-eval-defun)
-                  (sly-eval-defun))
-                 ((fboundp 'slime-eval-defun)
-                  (slime-eval-defun))
-                 (t
-                  (user-error "No evaluator command available")))))
 
      (init-dwim-make-action
       :title "Open related test/source file"
@@ -3044,25 +2875,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (insert (format "// %s" doc)))))))
 
      (init-dwim-make-action
-      :title "Start Emacs profiler"
-      :description "Start the built-in Emacs profiler (CPU)"
-      :category "Code"
-      :priority 35
-      :predicate (lambda () (fboundp 'profiler-start))
-      :action (lambda ()
-                (profiler-start 'cpu)
-                (message "Profiler started — call init-dwim → Stop profiler when done")))
-
-     (init-dwim-make-action
-      :title "Stop profiler and show report"
-      :description "Stop the built-in Emacs profiler and open the report"
-      :category "Code"
-      :priority 35
-      :predicate (lambda () (and (fboundp 'profiler-running-p)
-                                 (profiler-running-p)))
-      :action (lambda () (profiler-stop) (profiler-report)))
-
-     (init-dwim-make-action
       :title "Send buffer to AI for review"
       :description "Ask an AI to review the current buffer"
       :category "Code"
@@ -3072,30 +2884,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                 (init-dwim--ai-send-region
                  (point-min) (point-max)
                  "Please review this code and suggest improvements:")))
-
-     (init-dwim-make-action
-      :title "Run current file"
-      :description "Execute the current file with the appropriate interpreter"
-      :category "Code"
-      :priority 60
-      :predicate (lambda ()
-                   (or (derived-mode-p 'ruby-mode)
-                       (derived-mode-p 'js-mode 'typescript-mode)
-                       (derived-mode-p 'sh-mode)
-                       (derived-mode-p 'emacs-lisp-mode)))
-      :action (lambda ()
-                (let ((f (buffer-file-name)))
-                  (unless f (user-error "Buffer is not visiting a file"))
-                  (cond
-                   ((derived-mode-p 'ruby-mode)
-                    (compile (format "ruby %s" (shell-quote-argument f))))
-                   ((derived-mode-p 'js-mode 'typescript-mode)
-                    (compile (format "node %s" (shell-quote-argument f))))
-                   ((derived-mode-p 'sh-mode)
-                    (compile (format "bash %s" (shell-quote-argument f))))
-                   ((derived-mode-p 'emacs-lisp-mode)
-                    (load-file f))
-                   (t (user-error "No runner for %s" major-mode))))))
 
      (init-dwim-make-action
       :title "Toggle breakpoint"
@@ -4227,7 +4015,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :title "Save buffer to file"
     :description "Save the current buffer to its file"
     :category "Buffer"
-    :priority 90
+    :priority 100
     :predicate (lambda ()
                  (and (init-dwim--buffer-file-p)
                       (buffer-modified-p)))
@@ -4774,25 +4562,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
               (if (= (count-windows) 1)
                   (winner-undo)
                 (delete-other-windows))))
-
-   (init-dwim-make-action
-    :title "Save window config to register"
-    :description "Store the current window layout in a register"
-    :category "Window"
-    :priority 55
-    :action (lambda ()
-              (let ((reg (read-char "Save window config to register: ")))
-                (window-configuration-to-register reg)
-                (message "Window config saved to register %c" reg))))
-
-   (init-dwim-make-action
-    :title "Restore window config from register"
-    :description "Restore a window layout from a register"
-    :category "Window"
-    :priority 53
-    :action (lambda ()
-              (let ((reg (read-char "Restore window config from register: ")))
-                (jump-to-register reg))))
 
    (init-dwim-make-action
     :title "Toggle side window"
@@ -5526,92 +5295,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                    beg end
                    "Refactor this code for readability without changing its behaviour. Show the improved version:")))))))
 
-;;; ── Output / compilation buffers
-
-(defun init-dwim-output-buffer-provider ()
-  "Return actions relevant to grep, compilation, and xref result buffers."
-  (when (or (derived-mode-p 'compilation-mode)
-            (derived-mode-p 'grep-mode)
-            (derived-mode-p 'xref--xref-buffer-mode))
-    (list
-     (init-dwim-make-action
-      :title "Jump to match"
-      :description "Visit the file location of the match at point"
-      :category "Output"
-      :priority 100
-      :action (lambda ()
-                (cond
-                 ((derived-mode-p 'grep-mode 'compilation-mode)
-                  (compile-goto-error))
-                 ((derived-mode-p 'xref--xref-buffer-mode)
-                  (xref-goto-xref))
-                 (t
-                  (user-error "Cannot jump from this buffer")))))
-
-     (init-dwim-make-action
-      :title "Next match"
-      :description "Move to the next result in the output buffer"
-      :category "Output"
-      :priority 95
-      :action (lambda ()
-                (cond
-                 ((derived-mode-p 'compilation-mode 'grep-mode)
-                  (compilation-next-error 1))
-                 ((derived-mode-p 'xref--xref-buffer-mode)
-                  (xref-next-line))
-                 (t
-                  (user-error "No next-match command available")))))
-
-     (init-dwim-make-action
-      :title "Previous match"
-      :description "Move to the previous result in the output buffer"
-      :category "Output"
-      :priority 93
-      :action (lambda ()
-                (cond
-                 ((derived-mode-p 'compilation-mode 'grep-mode)
-                  (compilation-previous-error 1))
-                 ((derived-mode-p 'xref--xref-buffer-mode)
-                  (xref-prev-line))
-                 (t
-                  (user-error "No previous-match command available")))))
-
-     (init-dwim-make-action
-      :title "Rerun / recompile"
-      :description "Re-run the last compilation or grep command"
-      :category "Output"
-      :priority 85
-      :predicate (lambda () (fboundp 'recompile))
-      :action (lambda () (recompile)))
-
-     (init-dwim-make-action
-      :title "Kill process"
-      :description "Kill the running compilation/grep process"
-      :category "Output"
-      :priority 70
-      :predicate (lambda ()
-                   (and (derived-mode-p 'compilation-mode)
-                        (get-buffer-process (current-buffer))))
-      :action (lambda ()
-                (kill-compilation)
-                (message "Compilation process killed")))
-
-     (init-dwim-make-action
-      :title "Copy all matches"
-      :description "Copy the entire output buffer to the kill ring"
-      :category "Output"
-      :priority 60
-      :action (lambda ()
-                (kill-new (buffer-substring-no-properties (point-min) (point-max)))
-                (message "Output buffer copied")))
-
-     (init-dwim-make-action
-      :title "Search in results"
-      :description "Incremental search within the results buffer"
-      :category "Output"
-      :priority 55
-      :action (lambda () (call-interactively #'isearch-forward))))))
-
 ;;; ── Compilation buffer ────────────────────────────────────────────────────
 
 (defun init-dwim-compile-provider ()
@@ -5680,6 +5363,22 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda ()
                 (let ((inhibit-read-only t))
                   (ansi-color-apply-on-region (point-min) (point-max)))))
+
+     (init-dwim-make-action
+      :title "Copy compilation output"
+      :description "Copy the entire compilation buffer to the kill ring"
+      :category "Compile"
+      :priority 60
+      :action (lambda ()
+                (kill-new (buffer-substring-no-properties (point-min) (point-max)))
+                (message "Compilation buffer copied")))
+
+     (init-dwim-make-action
+      :title "Search in output"
+      :description "Incremental search within the compilation buffer"
+      :category "Compile"
+      :priority 55
+      :action (lambda () (call-interactively #'isearch-forward)))
 
      (init-dwim-make-action
       :title "Save compilation buffer"
@@ -5819,7 +5518,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :action (lambda ()
               (let ((reg (read-char "Register for window config: ")))
                 (window-configuration-to-register reg)
-                (message "Window config → register %c" reg))))
+                (message "Window config → register %c. 'Jump to register' to restore" reg))))
 
    (init-dwim-make-action
     :title "Store number in register"
@@ -6102,15 +5801,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
   "Return narrowing and focus actions."
   (list
    (init-dwim-make-action
-    :title "Narrow to region"
-    :description "Show only the selected region"
-    :category "Narrow"
-    :priority 85
-    :predicate #'init-dwim--region-active-p
-    :action (lambda ()
-              (narrow-to-region (region-beginning) (region-end))))
-
-   (init-dwim-make-action
     :title "Narrow to defun"
     :description "Show only the current function definition"
     :category "Narrow"
@@ -6340,7 +6030,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (eshell-next-input 1)))
 
      (init-dwim-make-action
-      :title "Search command history"
+      :title "Search eshell history"
       :description "Incrementally search eshell input history"
       :category "Eshell"
       :priority 85
@@ -7548,20 +7238,6 @@ is retained for compatibility but returns nil."
                   (pp-display-expression expanded "*Macroexpand-1*"))))
 
      (init-dwim-make-action
-      :title "Jump to definition"
-      :description "Jump to the definition of the symbol at point"
-      :category "Elisp"
-      :priority 90
-      :predicate (lambda () (init-dwim--symbol-string))
-      :action (lambda ()
-                (let ((sym (intern-soft (init-dwim--symbol-string))))
-                  (when sym
-                    (cond
-                     ((fboundp sym) (find-function sym))
-                     ((boundp sym) (find-variable sym))
-                     (t (user-error "Cannot find definition of %s" sym)))))))
-
-     (init-dwim-make-action
       :title "Describe symbol at point"
       :description "Show help for the function or variable at point"
       :category "Elisp"
@@ -7900,7 +7576,7 @@ is retained for compatibility but returns nil."
       :action (lambda () (call-interactively #'rename-buffer)))
 
      (init-dwim-make-action
-      :title "Open eshell in project root"
+      :title "Open new eshell at project root"
       :description "Launch eshell at the current project root"
       :category "Terminal"
       :priority 58
@@ -8004,13 +7680,6 @@ is retained for compatibility but returns nil."
                   (writeroom-decrease-width))
                  ((fboundp 'olivetti-shrink)
                   (olivetti-shrink)))))
-
-     (init-dwim-make-action
-      :title "Toggle line numbers"
-      :description "Show or hide line numbers in this buffer"
-      :category "Focus"
-      :priority 70
-      :action (lambda () (display-line-numbers-mode 'toggle)))
 
      (init-dwim-make-action
       :title "Toggle visual line mode"
@@ -9621,12 +9290,12 @@ is retained for compatibility but returns nil."
         :action (lambda () (vc-print-log)))
 
        (init-dwim-make-action
-        :title "VC annotate current file"
+        :title "VC blame current file"
         :description "Annotate the current file with VC blame information"
         :category "VC"
         :priority 68
         :predicate (lambda () (fboundp 'vc-annotate))
-        :action (lambda () (vc-annotate file)))
+        :action (lambda () (call-interactively #'vc-annotate)))
 
        (init-dwim-make-action
         :title "VC revert current file"
@@ -10726,11 +10395,7 @@ is retained for compatibility but returns nil."
                    (and (init-dwim--buffer-file-p)
                         (or (executable-find "prettier")
                             (fboundp 'apheleia-format-buffer))))
-      :action (lambda ()
-                (if (fboundp 'apheleia-format-buffer)
-                    (apheleia-format-buffer)
-                  (compile (format "prettier --write %s"
-                                   (shell-quote-argument (buffer-file-name)))))))
+      :action #'init-dwim-extra--prettier-format-file)
 
      (init-dwim-make-action
       :title "Organize imports"
@@ -10843,11 +10508,7 @@ is retained for compatibility but returns nil."
                    (and (init-dwim--buffer-file-p)
                         (or (executable-find "prettier")
                             (fboundp 'apheleia-format-buffer))))
-      :action (lambda ()
-                (if (fboundp 'apheleia-format-buffer)
-                    (apheleia-format-buffer)
-                  (compile (format "prettier --write %s"
-                                   (shell-quote-argument (buffer-file-name)))))))
+      :action #'init-dwim-extra--prettier-format-file)
 
      (init-dwim-make-action
       :title "Run jest tests"
@@ -11114,20 +10775,6 @@ is retained for compatibility but returns nil."
                   (when (looking-at "#!")
                     (forward-line 1))
                   (insert "\nset -euo pipefail\n"))))
-
-     (init-dwim-make-action
-      :title "Insert shebang"
-      :description "Insert #!/usr/bin/env bash at the top of the file"
-      :category "ShellScript"
-      :priority 72
-      :predicate (lambda ()
-                   (save-excursion
-                     (goto-char (point-min))
-                     (not (looking-at "#!"))))
-      :action (lambda ()
-                (save-excursion
-                  (goto-char (point-min))
-                  (insert "#!/usr/bin/env bash\n"))))
 
      (init-dwim-make-action
       :title "Send to eshell for testing"
@@ -11965,16 +11612,7 @@ is retained for compatibility but returns nil."
     :priority 70
     :predicate (lambda () (use-region-p))
     :action (lambda ()
-              (call-interactively #'rectangle-number-lines)))
-
-   (init-dwim-make-action
-    :title "Copy rectangle to register"
-    :description "Save the rectangle to a named register"
-    :category "Rectangle"
-    :priority 65
-    :predicate (lambda () (use-region-p))
-    :action (lambda ()
-              (call-interactively #'copy-rectangle-to-register)))))
+              (call-interactively #'rectangle-number-lines)))))
 
 ;;; ── Calc ─────────────────────────────────────────────────────────────────
 
@@ -12621,7 +12259,6 @@ is retained for compatibility but returns nil."
         init-dwim-docker-provider
 
         ;; Shells, terminals, output buffers, and search state.
-        init-dwim-output-buffer-provider
         init-dwim-compile-provider
         init-dwim-occur-provider
         init-dwim-comint-provider
