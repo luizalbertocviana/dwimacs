@@ -4902,13 +4902,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                 (message "Messages cleared")))
 
      (init-dwim-make-action
-      :title "Describe mode"
-      :description "Show documentation for the current major mode"
-      :category "Help"
-      :priority 60
-      :action (lambda () (call-interactively #'describe-mode)))
-
-     (init-dwim-make-action
       :title "Where is"
       :description "Find the key binding for a command"
       :category "Help"
@@ -6143,6 +6136,21 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :category "Emacs"
     :priority 44
     :action (lambda () (call-interactively #'describe-variable)))
+
+   (init-dwim-make-action
+    :title "Describe mode"
+    :description "Show documentation for the current major mode"
+    :category "Emacs"
+    :priority 60
+    :action (lambda () (call-interactively #'describe-mode)))
+
+   (init-dwim-make-action
+    :title "Open Emacs manual"
+    :description "Jump to the top of the Emacs manual"
+    :category "Emacs"
+    :priority 55
+    :predicate (lambda () (fboundp 'info))
+    :action (lambda () (info "(emacs)")))
 
    (init-dwim-make-action
     :title "Open init file"
@@ -11072,14 +11080,6 @@ is retained for compatibility but returns nil."
                   (if sym
                       (info-lookup-symbol (intern sym))
                     (call-interactively #'info-lookup-symbol)))))
-
-     (init-dwim-make-action
-      :title "Open Emacs manual"
-      :description "Jump to the top of the Emacs manual"
-      :category "Info"
-      :priority 55
-      :predicate (lambda () (fboundp 'info))
-      :action (lambda () (info "(emacs)")))
 
      (init-dwim-make-action
       :title "Open Elisp manual"
