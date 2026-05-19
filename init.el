@@ -874,7 +874,7 @@ actions."
    :category "Project"
    :priority (or priority 74)
    :action (lambda ()
-             (init-dwim-extra--compile-in-project
+             (init-dwim--run-in-project
               (format "npm run %s" script)))))
 
 (defun init-dwim-extra--project-file (file)
@@ -884,16 +884,6 @@ actions."
 (defun init-dwim-extra--project-has-file-p (file)
   "Return non-nil when FILE exists in the current project."
   (file-exists-p (init-dwim-extra--project-file file)))
-
-(defun init-dwim-extra--compile-in-project (command)
-  "Run COMMAND with `compile' from the current project root."
-  (let ((default-directory (init-dwim--project-root)))
-    (compile command)))
-
-(defun init-dwim-extra--shell-command-in-project (command)
-  "Run async shell COMMAND from the current project root."
-  (let ((default-directory (init-dwim--project-root)))
-    (async-shell-command command)))
 
 (defun init-dwim-extra--buffer-file-relative-name ()
   "Return current buffer file path relative to project root, or nil."
@@ -1031,10 +1021,6 @@ Tries project.el, then Projectile, then `vc-root-dir', then
         (project-current nil))
    (and (fboundp 'vc-root-dir)
         (vc-root-dir))))
-
-(defun init-dwim--in-project-p ()
-  "Return non-nil if the current buffer is inside a recognized project."
-  (not (null (init-dwim--project-detected-p))))
 
 (defun init-dwim--lsp-available-p ()
   "Return non-nil when LSP-style actions are available in this buffer."
@@ -1237,21 +1223,6 @@ This function uses a short timeout and performs minimal HTML title extraction."
 (defun init-dwim--buffer-file-p ()
   "Return non-nil if the current buffer is visiting a file."
   (buffer-file-name))
-
-;;; New helper: word count string
-
-(defun init-dwim--word-count-message ()
-  "Return a word/line/char summary message for the buffer or region."
-  (if (use-region-p)
-      (format "Region: %d words, %d lines, %d chars"
-              (count-words (region-beginning) (region-end))
-              (- (line-number-at-pos (region-end)) (line-number-at-pos (region-beginning)))
-              (- (region-end) (region-beginning)))
-    (format "Buffer: %d words, %d lines, %d chars"
-            (count-words (point-min) (point-max))
-            (line-number-at-pos (point-max))
-            (- (point-max) (point-min)))))
-
 
 (defun init-dwim--json-mode-p ()
   "Return non-nil in JSON buffers."
@@ -1466,7 +1437,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :description "Search for the selected text in the current project"
         :category "Region"
         :priority 78
-        :predicate #'init-dwim--in-project-p
+        :predicate #'init-dwim--project-detected-p
         :action (lambda () (init-dwim--project-search text)))
 
        (init-dwim-make-action
@@ -1889,7 +1860,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :description "Find all occurrences of this URL in the current project"
       :category "URL"
       :priority 40
-      :predicate #'init-dwim--in-project-p
+      :predicate #'init-dwim--project-detected-p
       :action (lambda () (init-dwim--project-search url))))))
 
 ;;; ── File path ─────────────────────────────────────────────────────────────
@@ -2151,7 +2122,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :priority 60
         :predicate
         (lambda ()
-          (and file (init-dwim--in-project-p)))
+          (and file (init-dwim--project-detected-p)))
         :action
         (lambda ()
           (let* ((root (init-dwim--project-root))
@@ -2260,7 +2231,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :description "Search for the symbol in the current project"
       :category "Symbol"
       :priority 85
-      :predicate #'init-dwim--in-project-p
+      :predicate #'init-dwim--project-detected-p
       :action (lambda () (init-dwim--project-search symbol)))
 
      (init-dwim-make-action
@@ -2447,7 +2418,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :description "Append a dir-locals entry for the symbol at point"
       :category "Symbol"
       :priority 35
-      :predicate (lambda () (init-dwim--in-project-p))
+      :predicate (lambda () (init-dwim--project-detected-p))
       :action (lambda ()
                 (let* ((var (intern symbol))
                        (val (read--expression
@@ -3031,25 +3002,22 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :category "Text"
         :priority 90
         :predicate (lambda ()
-                     (or (fboundp 'markdown-preview)
-                         (fboundp 'markdown-live-preview-mode)
-                         (fboundp 'grip-mode)))
+                     (and (init-dwim--markdown-mode-p)
+                          (or (fboundp 'markdown-preview)
+                              (fboundp 'markdown-live-preview-mode))))
         :action (lambda ()
                   (cond
-                   ((fboundp 'markdown-preview)
-                    (markdown-preview))
+                   ((fboundp 'markdown-preview) (markdown-preview))
                    ((fboundp 'markdown-live-preview-mode)
                     (markdown-live-preview-mode 'toggle))
-                   ((fboundp 'grip-mode)
-                    (grip-mode 'toggle))
-                   (t
-                    (user-error "No preview command available")))))
+                   (t (user-error "No preview command available")))))
 
        (init-dwim-make-action
         :title "Insert link"
         :description "Insert a Markdown or Org-style link"
         :category "Text"
         :priority 85
+        :predicate (lambda () (not (init-dwim--markdown-mode-p)))
         :action (lambda ()
                   (let ((url (read-string "URL: "))
                         (title (read-string "Text: ")))
@@ -3058,49 +3026,29 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                       (insert (format "[%s](%s)" title url))))))
 
        (init-dwim-make-action
-        :title "Count words"
-        :description "Count words in the region or buffer"
-        :category "Text"
-        :priority 82
-        :action (lambda ()
-                  (if (use-region-p)
-                      (count-words-region (region-beginning) (region-end))
-                    (count-words-region (point-min) (point-max)))))
-
-       (init-dwim-make-action
-        :title "Export buffer"
-        :description "Export Markdown buffer when supported"
+        :title "Export Markdown buffer"
+        :description "Export Markdown buffer via markdown-export or live preview"
         :category "Text"
         :priority 75
         :predicate (lambda ()
-                     (or (fboundp 'markdown-export)
-                         (fboundp 'org-export-dispatch)))
+                     (and (init-dwim--markdown-mode-p)
+                          (or (fboundp 'markdown-export)
+                              (fboundp 'markdown-live-preview-mode))))
         :action (lambda ()
                   (cond
-                   ((fboundp 'markdown-export)
-                    (markdown-export))
-                   ((and (derived-mode-p 'org-mode)
-                         (fboundp 'org-export-dispatch))
-                    (call-interactively #'org-export-dispatch))
-                   (t
-                    (user-error "No export command available")))))
+                   ((fboundp 'markdown-export) (markdown-export))
+                   ((fboundp 'markdown-live-preview-mode) (markdown-live-preview-mode 'toggle))
+                   (t (user-error "No Markdown export command available")))))
 
        (init-dwim-make-action
-        :title "Toggle outline/folding"
-        :description "Toggle outline or code folding"
+        :title "Toggle code folding (hs)"
+        :description "Toggle hideshow code folding at point"
         :category "Text"
         :priority 70
         :predicate (lambda ()
-                     (or (fboundp 'outline-toggle-children)
-                         (fboundp 'hs-toggle-hiding)))
-        :action (lambda ()
-                  (cond
-                   ((fboundp 'outline-toggle-children)
-                    (outline-toggle-children))
-                   ((fboundp 'hs-toggle-hiding)
-                    (hs-toggle-hiding))
-                   (t
-                    (user-error "No folding command available")))))
+                     (and (not (derived-mode-p 'outline-mode 'org-mode))
+                          (fboundp 'hs-toggle-hiding)))
+        :action (lambda () (hs-toggle-hiding)))
 
        (init-dwim-make-action
         :title "Search text in project"
@@ -3108,7 +3056,9 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :category "Text"
         :priority 68
         :predicate (lambda ()
-                     (and word (init-dwim--in-project-p)))
+                     (and word
+                          (not (use-region-p))
+                          (init-dwim--project-detected-p)))
         :action (lambda ()
                   (init-dwim--project-search
                    (string-trim (substring-no-properties word)))))
@@ -3157,22 +3107,14 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                              (if (use-region-p) "Region" "Buffer") count))))
        
        (init-dwim-make-action
-        :title "Table of contents"
-        :description "Generate/update a table of contents when supported"
+        :title "Generate Org TOC"
+        :description "enerate or update the Org table of contents"
         :category "Text"
         :priority 55
         :predicate (lambda ()
-                     (or (fboundp 'markdown-toc-generate-or-refresh-toc)
-                         (and (derived-mode-p 'org-mode)
-                              (fboundp 'org-make-toc))))
-        :action (lambda ()
-                  (cond
-                   ((fboundp 'markdown-toc-generate-or-refresh-toc)
-                    (markdown-toc-generate-or-refresh-toc))
-                   ((fboundp 'org-make-toc)
-                    (org-make-toc))
-                   (t
-                    (user-error "No TOC command available")))))))))
+                     (and (derived-mode-p 'org-mode)
+                          (fboundp 'org-make-toc)))
+        :action (lambda () (org-make-toc)))))))
 
 ;;; ── Markdown ──────────────────────────────────────────────────────────────
 
@@ -3958,7 +3900,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :description "Switch to a project and open it in a dedicated frame"
         :category "Project"
         :priority 55
-        :predicate #'init-dwim--in-project-p
+        :predicate #'init-dwim--project-detected-p
         :action (lambda ()
                   (let ((frame (make-frame)))
                     (select-frame frame)
@@ -3979,7 +3921,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :description "Copy the current project root directory to the kill ring"
         :category "Project"
         :priority 38
-        :predicate #'init-dwim--in-project-p
+        :predicate #'init-dwim--project-detected-p
         :action (lambda ()
                   (let ((root (init-dwim--project-root)))
                     (kill-new root)
@@ -3990,7 +3932,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :description "Show all open buffers belonging to this project"
         :category "Project"
         :priority 36
-        :predicate #'init-dwim--in-project-p
+        :predicate #'init-dwim--project-detected-p
         :action (lambda ()
                   (let ((root (init-dwim--project-root)))
                     (ibuffer nil "*Project Buffers*"
@@ -4001,7 +3943,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :description "Search for a regexp across all project files"
         :category "Project"
         :priority 34
-        :predicate #'init-dwim--in-project-p
+        :predicate #'init-dwim--project-detected-p
         :action (lambda ()
                   (let ((re (read-regexp "Regexp: ")))
                     (init-dwim--project-search re))))
@@ -4013,7 +3955,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :priority 30
         :predicate (lambda ()
                      (and (fboundp 'projectile-invalidate-cache)
-                          (init-dwim--in-project-p)))
+                          (init-dwim--project-detected-p)))
         :action (lambda ()
                   (projectile-invalidate-cache nil)
                   (message "Project cache invalidated")))
@@ -4115,13 +4057,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
               (let ((path (buffer-file-name)))
                 (kill-new path)
                 (message "Copied: %s" path))))
-
-   (init-dwim-make-action
-    :title "Show word/line count"
-    :description "Display word and line statistics for the buffer or region"
-    :category "Buffer"
-    :priority 50
-    :action (lambda () (message "%s" (init-dwim--word-count-message))))
 
    (init-dwim-make-action
     :title "Toggle read-only"
@@ -4255,10 +4190,10 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
               (whitespace-mode 'toggle)))
 
    (init-dwim-make-action
-    :title "Detailed word count"
+    :title "Word and line count"
     :description "Show a detailed count of words, lines, chars, and sentences"
     :category "Buffer"
-    :priority 36
+    :priority 50
     :action (lambda ()
               (let* ((beg (if (use-region-p) (region-beginning) (point-min)))
                      (end (if (use-region-p) (region-end) (point-max)))
@@ -4313,6 +4248,13 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
               (message "Buffer marked as %s"
                        (if (buffer-modified-p) "modified" "unmodified"))))
    
+   (init-dwim-make-action
+    :title "Search in buffer"
+    :description "Incremental search within buffer"
+    :category "Buffer"
+    :priority 85
+    :action (lambda () (call-interactively #'isearch-forward)))
+
    (init-dwim-make-action
     :title "Toggle fill-column indicator"
     :description "Show or hide the fill-column ruler line"
@@ -4385,7 +4327,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :priority 70
       :predicate (lambda ()
                    (and (fboundp 'ibuffer-filter-by-directory)
-                        (init-dwim--in-project-p)))
+                        (init-dwim--project-detected-p)))
       :action (lambda ()
                 (ibuffer-filter-by-directory (init-dwim--project-root))))
 
@@ -4676,28 +4618,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                                (boundp 'yas-minor-mode)
                                yas-minor-mode))
     :action (lambda () (call-interactively #'yas-insert-snippet)))
-
-   (init-dwim-make-action
-    :title "New snippet"
-    :description "Create a new yasnippet for the current mode"
-    :category "Snippet"
-    :priority 55
-    :predicate (lambda () (fboundp 'yas-new-snippet))
-    :action (lambda () (yas-new-snippet)))
-
-   (init-dwim-make-action
-    :title "Expand abbrev"
-    :description "Expand the abbreviation at point"
-    :category "Snippet"
-    :priority 70
-    :action (lambda () (expand-abbrev)))
-
-   (init-dwim-make-action
-    :title "Define word abbrev"
-    :description "Interactively define a new word abbreviation"
-    :category "Snippet"
-    :priority 48
-    :action (lambda () (call-interactively #'define-global-abbrev)))
 
    (init-dwim-make-action
     :title "List snippets for mode"
@@ -5285,7 +5205,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :priority 40
       :predicate (lambda ()
                    (and (init-dwim--ai-available-p)
-                        (init-dwim--in-project-p)))
+                        (init-dwim--project-detected-p)))
       :action (lambda ()
                 (let* ((diff (shell-command-to-string
                               (format "git -C %s diff main...HEAD --stat"
@@ -6083,7 +6003,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :description "cd to the current project root in this eshell"
       :category "Eshell"
       :priority 72
-      :predicate #'init-dwim--in-project-p
+      :predicate #'init-dwim--project-detected-p
       :action (lambda ()
                 (eshell/cd (init-dwim--project-root))
                 (eshell-send-input)))
@@ -6906,7 +6826,7 @@ is retained for compatibility but returns nil."
 
 (defun init-dwim-isearch-provider ()
   "Return actions available while an isearch is active."
-  (when (bound-and-true-p isearch-mode)
+  (when (not (string-empty-p isearch-string))
     (list
      (init-dwim-make-action
       :title "Occur from search string"
@@ -6947,23 +6867,7 @@ is retained for compatibility but returns nil."
       :category "Isearch"
       :priority 72
       :predicate (lambda () (fboundp 'isearch-toggle-regexp))
-      :action (lambda () (isearch-toggle-regexp)))
-
-     (init-dwim-make-action
-      :title "Restrict search to defun"
-      :description "Narrow isearch to the current function definition"
-      :category "Isearch"
-      :priority 68
-      :predicate (lambda () (derived-mode-p 'prog-mode))
-      :action (lambda ()
-                (isearch-narrow-to-defun)))
-
-     (init-dwim-make-action
-      :title "Exit isearch"
-      :description "Exit isearch, leaving point at the current match"
-      :category "Isearch"
-      :priority 60
-      :action (lambda () (isearch-exit))))))
+      :action (lambda () (isearch-toggle-regexp))))))
 
 ;;; ── Ediff session (NEW) ───────────────────────────────────────────────────
 
@@ -7620,7 +7524,7 @@ is retained for compatibility but returns nil."
       :priority 58
       :predicate (lambda ()
                    (and (fboundp 'eshell)
-                        (init-dwim--in-project-p)))
+                        (init-dwim--project-detected-p)))
       :action (lambda ()
                 (let ((default-directory (init-dwim--project-root)))
                   (eshell t))))
@@ -7867,7 +7771,7 @@ is retained for compatibility but returns nil."
       :priority 58
       :predicate (lambda ()
                    (and (fboundp 'consult-git-log-grep)
-                        (init-dwim--in-project-p)))
+                        (init-dwim--project-detected-p)))
       :action (lambda () (call-interactively #'consult-git-log-grep)))
      
      (init-dwim-make-action
@@ -8724,7 +8628,7 @@ is retained for compatibility but returns nil."
         :category "Project"
         :priority 67
         :action (lambda ()
-                  (init-dwim-extra--compile-in-project "npm install")))
+                  (init-dwim--run-in-project "npm install")))
        actions)
 
       (dolist (script (init-dwim-extra--package-json-scripts))
@@ -8748,7 +8652,7 @@ is retained for compatibility but returns nil."
         :category "Project"
         :priority 86
         :action (lambda ()
-                  (init-dwim-extra--compile-in-project "make")))
+                  (init-dwim--run-in-project "make")))
        actions)
 
       (push
@@ -8758,7 +8662,7 @@ is retained for compatibility but returns nil."
         :category "Project"
         :priority 84
         :action (lambda ()
-                  (init-dwim-extra--compile-in-project "make test")))
+                  (init-dwim--run-in-project "make test")))
        actions))
 
     ;; Justfile
@@ -8772,7 +8676,7 @@ is retained for compatibility but returns nil."
         :priority 86
         :predicate (lambda () (executable-find "just"))
         :action (lambda ()
-                  (init-dwim-extra--compile-in-project "just")))
+                  (init-dwim--run-in-project "just")))
        actions)
 
       (push
@@ -8790,7 +8694,7 @@ is retained for compatibility but returns nil."
                    (shell-command-to-string "just --summary")
                    "[ \n]+" t))
                  (recipe (completing-read "Just recipe: " recipes nil t)))
-            (init-dwim-extra--compile-in-project
+            (init-dwim--run-in-project
              (format "just %s" recipe)))))
        actions))
 
@@ -8809,7 +8713,7 @@ is retained for compatibility but returns nil."
           :priority (cdr pair)
           :predicate (lambda () (executable-find "cargo"))
           :action (lambda ()
-                    (init-dwim-extra--compile-in-project (car pair))))
+                    (init-dwim--run-in-project (car pair))))
          actions)))
 
     ;; Go
@@ -8826,7 +8730,7 @@ is retained for compatibility but returns nil."
           :priority (cdr pair)
           :predicate (lambda () (executable-find "go"))
           :action (lambda ()
-                    (init-dwim-extra--compile-in-project (car pair))))
+                    (init-dwim--run-in-project (car pair))))
          actions)))
 
     ;; Python
@@ -8848,7 +8752,7 @@ is retained for compatibility but returns nil."
                        (executable-find
                         (car (split-string (car pair)))))
           :action (lambda ()
-                    (init-dwim-extra--compile-in-project (car pair))))
+                    (init-dwim--run-in-project (car pair))))
          actions)))
 
     ;; Ruby / Bundler / RSpec
@@ -8867,7 +8771,7 @@ is retained for compatibility but returns nil."
           :predicate (lambda () (executable-find "bundle"))
           :action (let ((cmd (car pair)))
                     (lambda ()
-                      (init-dwim-extra--compile-in-project cmd))))
+                      (init-dwim--run-in-project cmd))))
          actions)))
 
     ;; Java / Maven
@@ -8885,7 +8789,7 @@ is retained for compatibility but returns nil."
           :predicate (lambda () (executable-find "mvn"))
           :action (let ((cmd (car pair)))
                     (lambda ()
-                      (init-dwim-extra--compile-in-project cmd))))
+                      (init-dwim--run-in-project cmd))))
          actions)))
 
     ;; Java / Gradle
@@ -8907,7 +8811,7 @@ is retained for compatibility but returns nil."
                                               (init-dwim--project-root)))))
           :action (let ((cmd (car pair)))
                     (lambda ()
-                      (init-dwim-extra--compile-in-project
+                      (init-dwim--run-in-project
                        (if (file-executable-p
                             (expand-file-name "gradlew"
                                               (init-dwim--project-root)))
@@ -8931,7 +8835,7 @@ is retained for compatibility but returns nil."
           :predicate (lambda () (executable-find "mix"))
           :action (let ((cmd (car pair)))
                     (lambda ()
-                      (init-dwim-extra--compile-in-project cmd))))
+                      (init-dwim--run-in-project cmd))))
          actions)))
 
     actions))
@@ -8957,7 +8861,7 @@ is retained for compatibility but returns nil."
                          (directory-file-name
                           (init-dwim--project-root)))))
                  (tag (read-string "Docker tag: " root)))
-            (init-dwim-extra--compile-in-project
+            (init-dwim--run-in-project
              (format "docker build -t %s ." tag)))))
        actions)
 
@@ -8971,8 +8875,7 @@ is retained for compatibility but returns nil."
         :action
         (lambda ()
           (let ((image (read-string "Image: ")))
-            (init-dwim-extra--shell-command-in-project
-             (format "docker run --rm -it %s" image)))))
+            (init-dwim--run-in-project (format "docker run --rm -it %s" image) t))))
        actions))
 
     (when (init-dwim-extra--docker-compose-file-p)
@@ -8991,7 +8894,7 @@ is retained for compatibility but returns nil."
           :action
           (let ((cmd (car pair)))
             (lambda ()
-              (init-dwim-extra--compile-in-project cmd))))
+              (init-dwim--run-in-project cmd))))
          actions)))
 
     ;; Always-available Docker commands (don't require a project file)
@@ -9132,7 +9035,7 @@ is retained for compatibility but returns nil."
                      (and (executable-find "docker")
                           (init-dwim-extra--docker-compose-file-p)))
         :action (lambda ()
-                  (init-dwim-extra--compile-in-project
+                  (init-dwim--run-in-project
                    "docker compose restart")))
        actions)
       
@@ -9488,7 +9391,7 @@ is retained for compatibility but returns nil."
     :description "Create a bookmark at the current project root"
     :category "Bookmark"
     :priority 54
-    :predicate #'init-dwim--in-project-p
+    :predicate #'init-dwim--project-detected-p
     :action (lambda ()
               (let ((default-directory (init-dwim--project-root)))
                 (bookmark-set (read-string "Project bookmark name: "
@@ -9545,6 +9448,7 @@ is retained for compatibility but returns nil."
                                   (list yas-snippet-dirs)))))
                   (unless dir (user-error "No yas-snippet-dirs configured"))
                   (dired dir))))
+
      (init-dwim-make-action
       :title "Reload Yasnippets"
       :description "Reload all Yasnippet definitions"
@@ -9552,6 +9456,7 @@ is retained for compatibility but returns nil."
       :priority 45
       :predicate (lambda () (fboundp 'yas-reload-all))
       :action #'yas-reload-all)
+
      (init-dwim-make-action
       :title "Create mode snippet"
       :description "Create a new snippet for the current major mode"
@@ -9559,6 +9464,7 @@ is retained for compatibility but returns nil."
       :priority 44
       :predicate (lambda () (fboundp 'yas-new-snippet))
       :action #'yas-new-snippet)
+
      (init-dwim-make-action
       :title "Create snippet from region"
       :description "Use the active region as the body of a new snippet"
