@@ -793,6 +793,19 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim-extra--make-prettier-action (category &optional priority)
+  "Return a `Format with prettier' action for CATEGORY at PRIORITY."
+  (init-dwim-make-action
+   :title "Format with prettier"
+   :description "Format file with prettier or apheleia"
+   :category category
+   :priority (or priority 86)
+   :predicate (lambda ()
+                (and (init-dwim--buffer-file-p)
+                     (or (executable-find "prettier")
+                         (fboundp 'apheleia-format-buffer))))
+   :action #'init-dwim-extra--prettier-format-file))
+
 (defun init-dwim-extra--prettier-format-file ()
   "Format the current file with prettier or apheleia."
   (if (fboundp 'apheleia-format-buffer)
@@ -2997,22 +3010,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (thing-at-point 'word t))))
       (list
        (init-dwim-make-action
-        :title "Preview buffer"
-        :description "Preview Markdown/text buffer when supported"
-        :category "Text"
-        :priority 90
-        :predicate (lambda ()
-                     (and (init-dwim--markdown-mode-p)
-                          (or (fboundp 'markdown-preview)
-                              (fboundp 'markdown-live-preview-mode))))
-        :action (lambda ()
-                  (cond
-                   ((fboundp 'markdown-preview) (markdown-preview))
-                   ((fboundp 'markdown-live-preview-mode)
-                    (markdown-live-preview-mode 'toggle))
-                   (t (user-error "No preview command available")))))
-
-       (init-dwim-make-action
         :title "Insert link"
         :description "Insert a Markdown or Org-style link"
         :category "Text"
@@ -3024,21 +3021,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (if (derived-mode-p 'org-mode)
                         (insert (format "[[%s][%s]]" url title))
                       (insert (format "[%s](%s)" title url))))))
-
-       (init-dwim-make-action
-        :title "Export Markdown buffer"
-        :description "Export Markdown buffer via markdown-export or live preview"
-        :category "Text"
-        :priority 75
-        :predicate (lambda ()
-                     (and (init-dwim--markdown-mode-p)
-                          (or (fboundp 'markdown-export)
-                              (fboundp 'markdown-live-preview-mode))))
-        :action (lambda ()
-                  (cond
-                   ((fboundp 'markdown-export) (markdown-export))
-                   ((fboundp 'markdown-live-preview-mode) (markdown-live-preview-mode 'toggle))
-                   (t (user-error "No Markdown export command available")))))
 
        (init-dwim-make-action
         :title "Toggle code folding (hs)"
@@ -4862,14 +4844,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :category "Help"
       :priority 50
       :predicate (lambda () (fboundp 'view-lossage))
-      :action (lambda () (view-lossage)))
-     
-     (init-dwim-make-action
-      :title "Search in buffer"
-      :description "Incremental search within the help buffer"
-      :category "Help"
-      :priority 65
-      :action (lambda () (call-interactively #'isearch-forward))))))
+      :action (lambda () (view-lossage))))))
 
 ;;; ── Evil (NEW) ────────────────────────────────────────────────────────────
 
@@ -5253,7 +5228,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (recompile)))
 
      (init-dwim-make-action
-      :title "Next error"
+      :title "Next compile error"
       :description "Jump to the next compilation error"
       :category "Compile"
       :priority 95
@@ -5261,7 +5236,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (compilation-next-error 1)))
 
      (init-dwim-make-action
-      :title "Previous error"
+      :title "Previous compile error"
       :description "Jump to the previous compilation error"
       :category "Compile"
       :priority 93
@@ -5315,13 +5290,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda ()
                 (kill-new (buffer-substring-no-properties (point-min) (point-max)))
                 (message "Compilation buffer copied")))
-
-     (init-dwim-make-action
-      :title "Search in output"
-      :description "Incremental search within the compilation buffer"
-      :category "Compile"
-      :priority 55
-      :action (lambda () (call-interactively #'isearch-forward)))
 
      (init-dwim-make-action
       :title "Save compilation buffer"
@@ -6416,7 +6384,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
   (when (bound-and-true-p git-gutter-mode)
     (list
      (init-dwim-make-action
-      :title "Next hunk"
+      :title "Next changed hunk"
       :description "Jump to the next git-gutter hunk"
       :category "GitGutter"
       :priority 90
@@ -6424,7 +6392,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (git-gutter:next-hunk 1)))
 
      (init-dwim-make-action
-      :title "Previous hunk"
+      :title "Previous changed hunk"
       :description "Jump to the previous git-gutter hunk"
       :category "GitGutter"
       :priority 88
@@ -7495,7 +7463,7 @@ is retained for compatibility but returns nil."
       :action (lambda () (eat-send-string "clear\n")))
 
      (init-dwim-make-action
-      :title "Copy last output"
+      :title "Copy last terminal output"
       :description "Copy the last command output to the kill ring"
       :category "Terminal"
       :priority 80
@@ -7516,18 +7484,6 @@ is retained for compatibility but returns nil."
       :category "Terminal"
       :priority 70
       :action (lambda () (call-interactively #'rename-buffer)))
-
-     (init-dwim-make-action
-      :title "Open new eshell at project root"
-      :description "Launch eshell at the current project root"
-      :category "Terminal"
-      :priority 58
-      :predicate (lambda ()
-                   (and (fboundp 'eshell)
-                        (init-dwim--project-detected-p)))
-      :action (lambda ()
-                (let ((default-directory (init-dwim--project-root)))
-                  (eshell t))))
 
      (init-dwim-make-action
       :title "Send buffer to eat"
@@ -8378,7 +8334,7 @@ is retained for compatibility but returns nil."
                   (message "Conversation cleared"))))
 
      (init-dwim-make-action
-      :title "Open new gptel chat"
+      :title "New gptel chat buffer"
       :description "Create a fresh gptel conversation buffer"
       :category "AI"
       :priority 90
@@ -9255,7 +9211,7 @@ is retained for compatibility but returns nil."
         :action (lambda () (vc-register)))
 
        (init-dwim-make-action
-        :title "VC push"
+        :title "VC push (built-in)"
         :description "Push commits to the upstream remote"
         :category "VC"
         :priority 62
@@ -9263,7 +9219,7 @@ is retained for compatibility but returns nil."
         :action (lambda () (call-interactively #'vc-push)))
 
        (init-dwim-make-action
-        :title "VC pull"
+        :title "VC pull (built-in)"
         :description "Pull changes from the upstream remote"
         :category "VC"
         :priority 60
@@ -10330,16 +10286,7 @@ is retained for compatibility but returns nil."
                  (t
                   (init-dwim--run-in-project "npx jest")))))
 
-     (init-dwim-make-action
-      :title "Format with prettier"
-      :description "Format the current file using prettier"
-      :category "TypeScript"
-      :priority 82
-      :predicate (lambda ()
-                   (and (init-dwim--buffer-file-p)
-                        (or (executable-find "prettier")
-                            (fboundp 'apheleia-format-buffer))))
-      :action #'init-dwim-extra--prettier-format-file)
+     (init-dwim-extra--make-prettier-action "TypeScript" 86)
 
      (init-dwim-make-action
       :title "Organize imports"
@@ -10443,16 +10390,7 @@ is retained for compatibility but returns nil."
                 (compile (format "eslint --fix %s"
                                  (shell-quote-argument (buffer-file-name))))))
 
-     (init-dwim-make-action
-      :title "Format with prettier"
-      :description "Format the current file using prettier"
-      :category "JavaScript"
-      :priority 84
-      :predicate (lambda ()
-                   (and (init-dwim--buffer-file-p)
-                        (or (executable-find "prettier")
-                            (fboundp 'apheleia-format-buffer))))
-      :action #'init-dwim-extra--prettier-format-file)
+     (init-dwim-extra--make-prettier-action "JavaScript" 84)
 
      (init-dwim-make-action
       :title "Run jest tests"
@@ -10698,17 +10636,6 @@ is retained for compatibility but returns nil."
                                  (shell-quote-argument (buffer-file-name))))))
 
      (init-dwim-make-action
-      :title "Make script executable"
-      :description "chmod +x the current file"
-      :category "ShellScript"
-      :priority 82
-      :predicate (lambda () (init-dwim--buffer-file-p))
-      :action (lambda ()
-                (let ((file (buffer-file-name)))
-                  (set-file-modes file (logior (file-modes file) #o111))
-                  (message "Made executable: %s" (file-name-nondirectory file)))))
-
-     (init-dwim-make-action
       :title "Insert strict mode header"
       :description "Insert 'set -euo pipefail' at the top of the script"
       :category "ShellScript"
@@ -10816,13 +10743,6 @@ is retained for compatibility but returns nil."
                        (heading (format "[[%s][%s]]" url (or title url))))
                   (init-dwim-extra--append-org-note heading nil)
                   (message "Saved: %s" (or title url)))))
-
-     (init-dwim-make-action
-      :title "Search in EWW page"
-      :description "Isearch within the current EWW page"
-      :category "EWW"
-      :priority 60
-      :action (lambda () (call-interactively #'isearch-forward)))
 
      (init-dwim-make-action
       :title "Open URL from EWW in new buffer"
@@ -11182,13 +11102,6 @@ is retained for compatibility but returns nil."
                   (message "Copied %d lines" (length matches)))))
 
      (init-dwim-make-action
-      :title "Search in Occur results"
-      :description "Isearch within the Occur results buffer"
-      :category "Occur"
-      :priority 68
-      :action (lambda () (call-interactively #'isearch-forward)))
-
-     (init-dwim-make-action
       :title "Re-run Occur query"
       :description "Prompt for a new pattern and refresh the Occur buffer"
       :category "Occur"
@@ -11229,13 +11142,6 @@ is retained for compatibility but returns nil."
                                    (point-max)))))
                     (kill-new (buffer-substring-no-properties beg end))
                     (message "Section copied")))))
-
-     (init-dwim-make-action
-      :title "Search in man page"
-      :description "Isearch within the current man page"
-      :category "Man"
-      :priority 80
-      :action (lambda () (call-interactively #'isearch-forward)))
 
      (init-dwim-make-action
       :title "Go to section"
@@ -11765,7 +11671,7 @@ is retained for compatibility but returns nil."
       :description "Move heading one level up"
       :category "Outline"
       :priority 75
-      :predicate (lambda () (fboundp 'outline-promote))
+      :predicate (lambda () (not (derived-mode-p 'org-mode)))
       :action (lambda () (outline-promote)))
 
      (init-dwim-make-action
@@ -11773,7 +11679,7 @@ is retained for compatibility but returns nil."
       :description "Move heading one level down"
       :category "Outline"
       :priority 73
-      :predicate (lambda () (fboundp 'outline-demote))
+      :predicate (lambda () (not (derived-mode-p 'org-mode)))
       :action (lambda () (outline-demote)))
 
      (init-dwim-make-action
@@ -11781,7 +11687,7 @@ is retained for compatibility but returns nil."
       :description "Move the subtree at point before the previous heading"
       :category "Outline"
       :priority 70
-      :predicate (lambda () (fboundp 'outline-move-subtree-up))
+      :predicate (lambda () (not (derived-mode-p 'org-mode)))
       :action (lambda () (outline-move-subtree-up 1)))
 
      (init-dwim-make-action
@@ -11813,7 +11719,7 @@ is retained for compatibility but returns nil."
       :description "Move the subtree at point after the next heading"
       :category "Outline"
       :priority 68
-      :predicate (lambda () (fboundp 'outline-move-subtree-down))
+      :predicate (lambda () (not (derived-mode-p 'org-mode)))
       :action (lambda () (outline-move-subtree-down 1))))))
 
 ;;; ── Abbrev ───────────────────────────────────────────────────────────────
