@@ -1803,17 +1803,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                       (kill-buffer buf))))))
 
      (init-dwim-make-action
-      :title "Open URL in EWW (readable)"
-      :description "Open the URL in EWW and switch to readable mode"
-      :category "URL"
-      :priority 56
-      :predicate (lambda () (fboundp 'eww))
-      :action (lambda ()
-                (eww url)
-                (when (fboundp 'eww-readable)
-                  (run-with-idle-timer 1 nil #'eww-readable))))
-
-     (init-dwim-make-action
       :title "Extract domain"
       :description "Copy just the host/domain part of the URL"
       :category "URL"
