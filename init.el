@@ -2788,33 +2788,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
   (when (derived-mode-p 'prog-mode)
     (list
      (init-dwim-make-action
-      :title "Run nearest test"
-      :description "Run the nearest test when a test runner can detect it"
-      :category "Code"
-      :priority 95
-      :predicate (lambda ()
-                   (or (fboundp 'projectile-test-project)
-                       (fboundp 'pytest-one)
-                       (fboundp 'rspec-verify-single)
-                       (fboundp 'go-test-current-test)
-                       (fboundp 'jest-file-dwim)))
-      :action (lambda ()
-                (cond
-                 ((fboundp 'pytest-one) (call-interactively #'pytest-one))
-                 ((fboundp 'rspec-verify-single) (rspec-verify-single))
-                 ((fboundp 'go-test-current-test) (go-test-current-test))
-                 ((fboundp 'jest-file-dwim) (jest-file-dwim))
-                 ((fboundp 'projectile-test-project) (projectile-test-project))
-                 (t (user-error "No nearest-test command available")))))
-
-     (init-dwim-make-action
-      :title "Format buffer"
-      :description "Format or indent the current buffer"
-      :category "Code"
-      :priority 88
-      :action #'init-dwim--format-buffer)
-
-     (init-dwim-make-action
       :title "Open related test/source file"
       :description "Switch between implementation and test file when possible"
       :category "Code"
@@ -3003,13 +2976,13 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :description "Insert a Markdown or Org-style link"
         :category "Text"
         :priority 85
-        :predicate (lambda () (not (init-dwim--markdown-mode-p)))
+        :predicate (lambda ()
+                     (and (not (init-dwim--markdown-mode-p))
+                          (not (derived-mode-p 'org-mode))))
         :action (lambda ()
                   (let ((url (read-string "URL: "))
                         (title (read-string "Text: ")))
-                    (if (derived-mode-p 'org-mode)
-                        (insert (format "[[%s][%s]]" url title))
-                      (insert (format "[%s](%s)" title url))))))
+                    (insert (format "[%s](%s)" title url)))))
 
        (init-dwim-make-action
         :title "Toggle code folding (hs)"
@@ -3754,15 +3727,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :action (lambda () (find-file notes)))
 
        (init-dwim-make-action
-        :title "Open Git status"
-        :description "Open Magit or vc-dir for this project"
-        :category "Project"
-        :priority 60
-        :predicate (lambda () (or (fboundp 'magit-status)
-                                  (fboundp 'vc-dir)))
-        :action (lambda () (init-dwim--open-git-status root)))
-
-       (init-dwim-make-action
         :title "Kill all project buffers"
         :description "Kill every buffer belonging to the current project"
         :category "Project"
@@ -3908,16 +3872,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                   (let ((root (init-dwim--project-root)))
                     (ibuffer nil "*Project Buffers*"
                              `((filename . ,root))))))
-
-       (init-dwim-make-action
-        :title "Find regexp in project files"
-        :description "Search for a regexp across all project files"
-        :category "Project"
-        :priority 34
-        :predicate #'init-dwim--project-detected-p
-        :action (lambda ()
-                  (let ((re (read-regexp "Regexp: ")))
-                    (init-dwim--project-search re))))
 
        (init-dwim-make-action
         :title "Invalidate project cache"
@@ -5185,22 +5139,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                       (erase-buffer)
                       (insert prompt "\n\nCommits:\n" log "\n\nChanged files:\n" diff))
                     (pop-to-buffer buf)
-                    (when (fboundp 'gptel-send) (gptel-send))))))
-     
-     (init-dwim-make-action
-      :title "AI: refactor for readability"
-      :description "Ask AI to refactor the selected code without changing behaviour"
-      :category "AI"
-      :priority 48
-      :predicate (lambda ()
-                   (and (init-dwim--ai-available-p)
-                        (init-dwim--region-active-p)))
-      :action (lambda ()
-                (let ((beg (region-beginning))
-                      (end (region-end)))
-                  (init-dwim--ai-send-region
-                   beg end
-                   "Refactor this code for readability without changing its behaviour. Show the improved version:")))))))
+                    (when (fboundp 'gptel-send) (gptel-send)))))))))
 
 ;;; ── Compilation buffer ────────────────────────────────────────────────────
 
@@ -6544,15 +6483,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                   (xref-find-definitions sym))))
 
      (init-dwim-make-action
-      :title "Find references interactively"
-      :description "Prompt for a symbol and find all its references"
-      :category "Xref"
-      :priority 75
-      :predicate (lambda () (fboundp 'xref-find-references))
-      :action (lambda ()
-                (call-interactively #'xref-find-references)))
-
-     (init-dwim-make-action
       :title "Clear xref marker stack"
       :description "Discard all xref navigation history"
       :category "Xref"
@@ -6947,7 +6877,7 @@ is retained for compatibility but returns nil."
     :action (lambda () (consult-resume)))
 
    (init-dwim-make-action
-    :title "Browse command history"
+    :title "Search command history"
     :description "Repeat a complex Elisp command from history (M-x, M-:)"
     :category "History"
     :priority 60
@@ -6961,14 +6891,6 @@ is retained for compatibility but returns nil."
     :priority 78
     :predicate (lambda () (fboundp 'vundo))
     :action (lambda () (vundo)))
-
-   (init-dwim-make-action
-    :title "Search command history"
-    :description "Browse and re-execute a previous M-x command"
-    :category "History"
-    :priority 58
-    :predicate (lambda () (fboundp 'consult-complex-command))
-    :action (lambda () (call-interactively #'consult-complex-command)))
 
    (init-dwim-make-action
     :title "Show message log"
@@ -7261,17 +7183,6 @@ is retained for compatibility but returns nil."
       :priority 60
       :predicate (lambda () (fboundp 'elp-instrument-function))
       :action (lambda () (call-interactively #'elp-instrument-function)))
-
-     (init-dwim-make-action
-      :title "Imenu jump to defun"
-      :description "Jump to a function definition via imenu"
-      :category "Elisp"
-      :priority 72
-      :predicate (lambda () (fboundp 'consult-imenu))
-      :action (lambda ()
-                (if (fboundp 'consult-imenu)
-                    (consult-imenu)
-                  (call-interactively #'imenu))))
 
      (init-dwim-make-action
       :title "Toggle lexical-binding"
