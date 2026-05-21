@@ -862,10 +862,10 @@ actions."
 
 (defun init-dwim-extra--docker-compose-file-p ()
   "Return non-nil when the project has a Docker Compose file."
-  (or (init-dwim-extra--project-has-file-p "compose.yaml")
-      (init-dwim-extra--project-has-file-p "compose.yml")
-      (init-dwim-extra--project-has-file-p "docker-compose.yaml")
-      (init-dwim-extra--project-has-file-p "docker-compose.yml")))
+  (init-dwim-extra--project-has-any-file-p "compose.yaml"
+                                           "compose.yml"
+                                           "docker-compose.yaml"
+                                           "docker-compose.yml"))
 
 (defun init-dwim-extra--eglot-managed-p ()
   "Return non-nil when current buffer is managed by Eglot."
@@ -962,13 +962,9 @@ actions."
     (delete-region (car bounds) (cdr bounds))
     (insert (number-to-string n))))
 
-(defun init-dwim--region-active-p ()
-  "Return non-nil when there is an active region."
-  (use-region-p))
-
 (defun init-dwim--region-bounds ()
   "Return active region bounds as a cons cell, or nil."
-  (when (init-dwim--region-active-p)
+  (when (use-region-p)
     (cons (region-beginning) (region-end))))
 
 (defun init-dwim--region-string ()
@@ -1734,7 +1730,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (kill-new url) (message "Copied URL: %s" url)))
 
      (init-dwim-make-action
-      :title "Insert Markdown link"
+      :title "Format as Markdown link"
       :description "Replace the URL with a Markdown link"
       :category "URL"
       :priority 80
@@ -1763,17 +1759,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :priority 58
       :predicate (lambda () (fboundp 'eww))
       :action (lambda () (eww url)))
-
-     (init-dwim-make-action
-      :title "Download URL"
-      :description "Download the URL to a file using url-copy-file"
-      :category "URL"
-      :priority 50
-      :predicate (lambda () (fboundp 'url-copy-file))
-      :action (lambda ()
-                (let ((dest (read-file-name "Download to: ")))
-                  (url-copy-file url dest 1)
-                  (message "Downloaded to %s" dest))))
 
      (init-dwim-make-action
       :title "Copy as Org link with fetched title"
@@ -1817,7 +1802,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (user-error "Could not extract domain from URL")))))
 
      (init-dwim-make-action
-      :title "Download URL with curl"
+      :title "Download URL"
       :description "Download the URL using curl (progress shown in *compilation*)"
       :category "URL"
       :priority 42
@@ -2249,14 +2234,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :category "Symbol"
       :priority 68
       :action (lambda () (occur (regexp-quote symbol))))
-
-     (init-dwim-make-action
-      :title "Highlight symbol"
-      :description "Highlight all occurrences of the symbol in the buffer"
-      :category "Symbol"
-      :priority 62
-      :predicate (lambda () (fboundp 'highlight-symbol-at-point))
-      :action (lambda () (highlight-symbol-at-point)))
 
      (init-dwim-make-action
       :title "Query-replace symbol"
@@ -2822,6 +2799,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :description "Comment or uncomment the current line"
       :category "Code"
       :priority 67
+      :predicate (lambda () (not (use-region-p)))
       :action (lambda ()
                 (comment-or-uncomment-region
                  (line-beginning-position)
@@ -3211,14 +3189,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     (let ((file (ignore-errors (dired-get-file-for-visit))))
       (list
        (init-dwim-make-action
-        :title "Open file"
-        :description "Open the Dired file at point"
-        :category "Dired"
-        :priority 100
-        :predicate (lambda () file)
-        :action (lambda () (find-file file)))
-
-       (init-dwim-make-action
         :title "Rename"
         :description "Rename the Dired file at point"
         :category "Dired"
@@ -3249,22 +3219,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :priority 80
         :predicate (lambda () (fboundp 'dired-do-compress))
         :action (lambda () (call-interactively #'dired-do-compress)))
-
-       (init-dwim-make-action
-        :title "Open externally"
-        :description "Open selected file externally"
-        :category "Dired"
-        :priority 78
-        :predicate (lambda () file)
-        :action (lambda () (init-dwim--open-externally file)))
-
-       (init-dwim-make-action
-        :title "Copy path"
-        :description "Copy selected file path"
-        :category "Dired"
-        :priority 76
-        :predicate (lambda () file)
-        :action (lambda () (kill-new file) (message "Copied path: %s" file)))
 
        (init-dwim-make-action
         :title "Git status for directory"
@@ -3924,7 +3878,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :category "Buffer"
     :priority 85
     :predicate #'init-dwim--buffer-file-p
-    :action (lambda () (revert-buffer nil t t)
+    :action (lambda () (call-interactively #'revert-buffer)
               (message "Buffer reverted")))
 
    (init-dwim-make-action
@@ -3973,7 +3927,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                        (- (point-max) (point-min)))))
 
    (init-dwim-make-action
-    :title "Copy buffer file path"
+    :title "Copy absolute file path"
     :description "Copy the full path of the file this buffer is visiting"
     :category "Buffer"
     :priority 53
@@ -4130,14 +4084,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                          words lines chars))))
    
    (init-dwim-make-action
-    :title "Revert buffer without asking"
-    :description "Revert the file from disk immediately, no confirmation"
-    :category "Buffer"
-    :priority 35
-    :predicate (lambda () (buffer-file-name))
-    :action (lambda () (revert-buffer nil t t)))
-
-   (init-dwim-make-action
     :title "Toggle relative line numbers"
     :description "Switch between absolute and relative line number display"
     :category "Buffer"
@@ -4238,7 +4184,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action (lambda () (call-interactively #'ibuffer-mark-by-name-regexp)))
 
      (init-dwim-make-action
-      :title "Unmark all"
+      :title "Unmark all buffers"
       :description "Remove all marks from the ibuffer list"
       :category "IBuffer"
       :priority 75
@@ -5045,7 +4991,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :priority 52
       :predicate (lambda ()
                    (and (init-dwim--ai-available-p)
-                        (init-dwim--region-active-p)))
+                        (use-region-p)))
       :action (lambda ()
                 (let ((beg (region-beginning))
                       (end (region-end)))
@@ -5082,7 +5028,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :priority 46
       :predicate (lambda ()
                    (and (init-dwim--ai-available-p)
-                        (init-dwim--region-active-p)))
+                        (use-region-p)))
       :action (lambda ()
                 (let* ((lang (read-string "Translate to: " "English"))
                        (prompt (format "Translate the following text to %s:" lang)))
@@ -5107,7 +5053,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :priority 42
       :predicate (lambda ()
                    (and (init-dwim--ai-available-p)
-                        (init-dwim--region-active-p)
+                        (use-region-p)
                         (or (derived-mode-p 'text-mode)
                             (derived-mode-p 'org-mode)
                             (derived-mode-p 'markdown-mode))))
@@ -5327,7 +5273,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :description "Save the selected region text into a register"
     :category "Register"
     :priority 70
-    :predicate #'init-dwim--region-active-p
+    :predicate #'use-region-p
     :action (lambda ()
               (let ((reg (read-char "Register: ")))
                 (copy-to-register reg (region-beginning) (region-end))
@@ -5375,7 +5321,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :description "Append the selected text to an existing register's contents"
     :category "Register"
     :priority 42
-    :predicate #'init-dwim--region-active-p
+    :predicate #'use-region-p
     :action (lambda ()
               (let ((reg (read-char "Append to register: ")))
                 (append-to-register reg (region-beginning) (region-end))
@@ -5396,7 +5342,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :description "Save a rectangle (column selection) to a register"
     :category "Register"
     :priority 50
-    :predicate #'init-dwim--region-active-p
+    :predicate #'use-region-p
     :action (lambda ()
               (let ((reg (read-char "Rectangle register: ")))
                 (copy-rectangle-to-register
@@ -5717,7 +5663,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :description "Open a new indirect buffer showing only the selected region"
     :category "Narrow"
     :priority 68
-    :predicate #'init-dwim--region-active-p
+    :predicate #'use-region-p
     :action (lambda ()
               (let ((beg (region-beginning))
                     (end (region-end)))
@@ -8498,32 +8444,8 @@ is retained for compatibility but returns nil."
                 (t 70)))
               actions)))
 
-    ;; Makefile
-    (when (or (init-dwim-extra--project-has-file-p "Makefile")
-              (init-dwim-extra--project-has-file-p "makefile"))
-      (push
-       (init-dwim-make-action
-        :title "make"
-        :description "Run default Makefile target"
-        :category "Project"
-        :priority 86
-        :action (lambda ()
-                  (init-dwim--run-in-project "make")))
-       actions)
-
-      (push
-       (init-dwim-make-action
-        :title "make test"
-        :description "Run Makefile test target"
-        :category "Project"
-        :priority 84
-        :action (lambda ()
-                  (init-dwim--run-in-project "make test")))
-       actions))
-
     ;; Justfile
-    (when (or (init-dwim-extra--project-has-file-p "Justfile")
-              (init-dwim-extra--project-has-file-p "justfile"))
+    (when (init-dwim-extra--project-has-any-file-p "Justfile" "justfile")
       (push
        (init-dwim-make-action
         :title "just"
@@ -8590,10 +8512,10 @@ is retained for compatibility but returns nil."
          actions)))
 
     ;; Python
-    (when (or (init-dwim-extra--project-has-file-p "uv.lock") 
-              (init-dwim-extra--project-has-file-p "pyproject.toml")
-              (init-dwim-extra--project-has-file-p "setup.py")
-              (init-dwim-extra--project-has-file-p "pytest.ini"))
+    (when (init-dwim-extra--project-has-any-file-p "uv.lock"
+                                                   "pyproject.toml"
+                                                   "setup.py"
+                                                   "pytest.ini")
       (dolist (pair '(("pytest" . 92)
                       ("python -m pytest" . 90)
                       ("ruff check ." . 84)
@@ -8931,7 +8853,7 @@ is retained for compatibility but returns nil."
     :description "Append selected text to the DWIM inbox file"
     :category "Notes"
     :priority 93
-    :predicate #'init-dwim--region-active-p
+    :predicate #'use-region-p
     :action
     (lambda ()
       (let ((heading (read-string "Heading: "))
@@ -10479,7 +10401,7 @@ is retained for compatibility but returns nil."
       :priority 68
       :predicate (lambda ()
                    (and (fboundp 'ruby-send-region)
-                        (init-dwim--region-active-p)))
+                        (use-region-p)))
       :action (lambda ()
                 (ruby-send-region (region-beginning) (region-end))))
 
@@ -11454,7 +11376,7 @@ is retained for compatibility but returns nil."
       :action (lambda () (org-agenda-todo 'done)))
 
      (init-dwim-make-action
-      :title "Schedule"
+      :title "Schedule entry"
       :description "Set or change the scheduled date for the entry"
       :category "OrgAgenda"
       :priority 90
@@ -11462,7 +11384,7 @@ is retained for compatibility but returns nil."
       :action (lambda () (call-interactively #'org-agenda-schedule)))
 
      (init-dwim-make-action
-      :title "Set deadline"
+      :title "Set deadline for entry"
       :description "Set or change the deadline for the entry"
       :category "OrgAgenda"
       :priority 88
@@ -11486,7 +11408,7 @@ is retained for compatibility but returns nil."
       :action (lambda () (org-agenda-archive)))
 
      (init-dwim-make-action
-      :title "Clock in"
+      :title "Clock in entry"
       :description "Start clocking the entry at point"
       :category "OrgAgenda"
       :priority 82
