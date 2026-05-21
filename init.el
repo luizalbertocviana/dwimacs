@@ -2829,17 +2829,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (insert (format "// %s" doc)))))))
 
      (init-dwim-make-action
-      :title "Send buffer to AI for review"
-      :description "Ask an AI to review the current buffer"
-      :category "Code"
-      :priority 45
-      :predicate #'init-dwim--ai-available-p
-      :action (lambda ()
-                (init-dwim--ai-send-region
-                 (point-min) (point-max)
-                 "Please review this code and suggest improvements:")))
-
-     (init-dwim-make-action
       :title "Toggle breakpoint"
       :description "Add or remove a breakpoint at the current line"
       :category "Code"
@@ -2912,16 +2901,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :action
       (lambda ()
         (eglot-code-actions nil nil "source.organizeImports" t)))
-
-     (init-dwim-make-action
-      :title "LSP quick fix"
-      :description "Run quick-fix code actions at point"
-      :category "LSP"
-      :priority 86
-      :predicate (lambda () (fboundp 'eglot-code-actions))
-      :action
-      (lambda ()
-        (eglot-code-actions nil nil "quickfix" t)))
 
      (init-dwim-make-action
       :title "LSP reconnect"
@@ -4441,7 +4420,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :priority 78
     :action (lambda ()
               (if (fboundp 'consult-bookmark)
-                  (consult-bookmark)
+                  (call-interactively #'consult-bookmark)
                 (call-interactively #'bookmark-jump))))
 
    (init-dwim-make-action
@@ -4496,22 +4475,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :category "Snippet"
     :priority 60
     :predicate (lambda () (fboundp 'yas-describe-tables))
-    :action (lambda () (yas-describe-tables)))
-
-   (init-dwim-make-action
-    :title "Try snippet in temp buffer"
-    :description "Open a scratch buffer in the current mode for snippet testing"
-    :category "Snippet"
-    :priority 45
-    :action (lambda ()
-              (let ((mode major-mode))
-                (with-current-buffer
-                    (get-buffer-create
-                     (format "*snippet-scratch-%s*" mode))
-                  (funcall mode)
-                  (when (fboundp 'yas-minor-mode)
-                    (yas-minor-mode 1))
-                  (pop-to-buffer (current-buffer))))))))
+    :action (lambda () (yas-describe-tables)))))
 
 ;;; ── Smerge (NEW) ──────────────────────────────────────────────────────────
 
@@ -5739,7 +5703,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                  (let ((mk (and (init-dwim--project-root)
                                 (expand-file-name "Makefile"
                                                   (init-dwim--project-root)))))
-                   (and mk (file-exists-p mk))))
+                   (and mk (init-dwim-extra--project-has-file-p mk))))
     :action (lambda ()
               (let* ((root (init-dwim--project-root))
                      (mk (expand-file-name "Makefile" root))
@@ -5778,6 +5742,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :description "Set the working directory for this buffer"
     :category "Shell"
     :priority 48
+    :predicate (lambda () (not (init-dwim--eshell-buffer-p)))
     :action (lambda ()
               (let ((dir (read-directory-name "Set default-directory: "
                                               default-directory)))
@@ -6466,21 +6431,6 @@ is retained for compatibility but returns nil."
   (when (or (and (boundp 'flymake-mode) flymake-mode)
             (and (boundp 'flycheck-mode) flycheck-mode))
     (list
-     (init-dwim-make-action
-      :title "List all errors"
-      :description "Show the full diagnostic list for this buffer"
-      :category "Diagnostics"
-      :priority 90
-      :action (lambda ()
-                (cond
-                 ((and (boundp 'flycheck-mode) flycheck-mode
-                       (fboundp 'flycheck-list-errors))
-                  (flycheck-list-errors))
-                 ((and (boundp 'flymake-mode) flymake-mode
-                       (fboundp 'flymake-show-buffer-diagnostics))
-                  (flymake-show-buffer-diagnostics))
-                 (t (user-error "No diagnostic list available")))))
-
      (init-dwim-make-action
       :title "Next error"
       :description "Jump to the next diagnostic error"
@@ -9195,19 +9145,7 @@ is retained for compatibility but returns nil."
               (require 'org)
               (org-back-to-heading t)
               (bookmark-set (read-string "Org heading bookmark name: "
-                                         (nth 4 (org-heading-components))))))
-   (init-dwim-make-action
-    :title "Jump to project bookmark"
-    :description "Jump to a bookmark, preferring project-style bookmarks by name"
-    :category "Bookmark"
-    :priority 50
-    :predicate (lambda () (boundp 'bookmark-alist))
-    :action (lambda ()
-              (require 'bookmark)
-              (bookmark-maybe-load-default-file)
-              (bookmark-jump (completing-read "Jump to project bookmark: "
-                                              (mapcar #'car bookmark-alist)
-                                              nil t))))))
+                                         (nth 4 (org-heading-components))))))))
 
 ;;; ── Snippet maintenance ──────────────────────────────────────────────────
 
@@ -10109,19 +10047,6 @@ is retained for compatibility but returns nil."
                   (init-dwim--run-in-project "npx jest")))))
 
      (init-dwim-extra--make-prettier-action "TypeScript" 86)
-
-     (init-dwim-make-action
-      :title "Organize imports"
-      :description "Ask the language server to organize imports"
-      :category "TypeScript"
-      :priority 80
-      :predicate #'init-dwim--lsp-available-p
-      :action (lambda ()
-                (cond
-                 ((and (fboundp 'eglot-code-actions)
-                       (ignore-errors (eglot-current-server)))
-                  (eglot-code-actions nil nil "source.organizeImports" t))
-                 (t (user-error "No LSP server available")))))
 
      (init-dwim-make-action
       :title "Add type annotation"
