@@ -1449,7 +1449,9 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :category "Region"
         :priority 78
         :predicate #'init-dwim--project-detected-p
-        :action (lambda () (init-dwim--project-search text)))
+        :action (lambda ()
+                  (deactivate-mark)
+                  (init-dwim--project-search text)))
 
        (init-dwim-make-action
         :title "Send region to AI"
@@ -2931,19 +2933,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (thing-at-point 'word t))))
       (list
        (init-dwim-make-action
-        :title "Insert link"
-        :description "Insert a Markdown or Org-style link"
-        :category "Text"
-        :priority 85
-        :predicate (lambda ()
-                     (and (not (init-dwim--markdown-mode-p))
-                          (not (derived-mode-p 'org-mode))))
-        :action (lambda ()
-                  (let ((url (read-string "URL: "))
-                        (title (read-string "Text: ")))
-                    (insert (format "[%s](%s)" title url)))))
-
-       (init-dwim-make-action
         :title "Toggle code folding (hs)"
         :description "Toggle hideshow code folding at point"
         :category "Text"
@@ -2952,19 +2941,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                      (and (not (derived-mode-p 'outline-mode 'org-mode))
                           (fboundp 'hs-toggle-hiding)))
         :action (lambda () (hs-toggle-hiding)))
-
-       (init-dwim-make-action
-        :title "Search text in project"
-        :description "Search selected text or word in the project"
-        :category "Text"
-        :priority 68
-        :predicate (lambda ()
-                     (and word
-                          (not (use-region-p))
-                          (init-dwim--project-detected-p)))
-        :action (lambda ()
-                  (init-dwim--project-search
-                   (string-trim (substring-no-properties word)))))
 
        (init-dwim-make-action
         :title "Fill paragraph"
@@ -3611,7 +3587,9 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :action (lambda ()
                   (init-dwim--project-search
                    (read-string "Search project for: "
-                                (or (init-dwim--region-string)
+                                (or (let ((region (init-dwim--region-string)))
+                                      (deactivate-mark)
+                                      region)
                                     (init-dwim--symbol-string)
                                     "")))))
 
@@ -4440,6 +4418,39 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :action (lambda () (call-interactively #'bookmark-delete)))
 
    (init-dwim-make-action
+    :title "Bookmark current project"
+    :description "Create a bookmark at the current project root"
+    :category "Bookmark"
+    :priority 54
+    :predicate #'init-dwim--project-detected-p
+    :action (lambda ()
+              (let ((default-directory (init-dwim--project-root)))
+                (bookmark-set (read-string "Project bookmark name: "
+                                           (file-name-nondirectory
+                                            (directory-file-name default-directory)))))))
+   (init-dwim-make-action
+    :title "Bookmark current directory"
+    :description "Create a bookmark for default-directory"
+    :category "Bookmark"
+    :priority 52
+    :action (lambda ()
+              (let ((default-directory default-directory))
+                (bookmark-set (read-string "Directory bookmark name: "
+                                           (file-name-nondirectory
+                                            (directory-file-name default-directory)))))))
+   (init-dwim-make-action
+    :title "Bookmark current Org heading"
+    :description "Create a bookmark at the current Org heading"
+    :category "Bookmark"
+    :priority 58
+    :predicate (lambda () (derived-mode-p 'org-mode))
+    :action (lambda ()
+              (require 'org)
+              (org-back-to-heading t)
+              (bookmark-set (read-string "Org heading bookmark name: "
+                                         (nth 4 (org-heading-components))))))
+   
+   (init-dwim-make-action
     :title "Save bookmarks"
     :description "Persist all bookmarks to disk"
     :category "Bookmark"
@@ -4471,6 +4482,47 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                                yas-minor-mode))
     :action (lambda () (call-interactively #'yas-insert-snippet)))
 
+   (init-dwim-make-action
+    :title "Visit Yasnippet directories"
+    :description "Open the first configured snippet directory"
+    :category "Snippet"
+    :priority 46
+    :action (lambda ()
+              (let ((dir (car (if (listp yas-snippet-dirs)
+                                  yas-snippet-dirs
+                                (list yas-snippet-dirs)))))
+                (unless dir (user-error "No yas-snippet-dirs configured"))
+                (dired dir))))
+
+   (init-dwim-make-action
+    :title "Reload Yasnippets"
+    :description "Reload all Yasnippet definitions"
+    :category "Snippet"
+    :priority 45
+    :predicate (lambda () (fboundp 'yas-reload-all))
+    :action #'yas-reload-all)
+
+   (init-dwim-make-action
+    :title "Create mode snippet"
+    :description "Create a new snippet for the current major mode"
+    :category "Snippet"
+    :priority 44
+    :predicate (lambda () (fboundp 'yas-new-snippet))
+    :action #'yas-new-snippet)
+
+   (init-dwim-make-action
+    :title "Create snippet from region"
+    :description "Use the active region as the body of a new snippet"
+    :category "Snippet"
+    :priority 47
+    :predicate #'use-region-p
+    :action (lambda ()
+              (let ((body (buffer-substring-no-properties
+                           (region-beginning) (region-end))))
+                (yas-new-snippet)
+                (goto-char (point-max))
+                (insert body))))
+   
    (init-dwim-make-action
     :title "List snippets for mode"
     :description "Show all yasnippets available for the current major mode"
@@ -4637,15 +4689,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
             (string= (buffer-name) "*Messages*")
             (string= (buffer-name) "*Warnings*"))
     (list
-     (init-dwim-make-action
-      :title "Copy buffer to kill ring"
-      :description "Copy entire help/messages text"
-      :category "Help"
-      :priority 90
-      :action (lambda ()
-                (kill-new (buffer-substring-no-properties (point-min) (point-max)))
-                (message "Help buffer contents copied")))
-
      (init-dwim-make-action
       :title "Follow link at point"
       :description "Follow the help cross-reference link at point"
@@ -5570,14 +5613,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :action (lambda () (narrow-to-page)))
 
    (init-dwim-make-action
-    :title "Widen (remove narrowing)"
-    :description "Restore the full buffer view"
-    :category "Narrow"
-    :priority 95
-    :predicate (lambda () (buffer-narrowed-p))
-    :action (lambda () (widen) (message "Buffer widened")))
-
-   (init-dwim-make-action
     :title "Toggle narrowing"
     :description "Toggle between narrowed and widened view"
     :category "Narrow"
@@ -5586,9 +5621,9 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
               (if (buffer-narrowed-p)
                   (widen)
                 (cond
-                 ((derived-mode-p 'prog-mode) (narrow-to-defun))
                  ((use-region-p)
                   (narrow-to-region (region-beginning) (region-end)))
+                 ((derived-mode-p 'prog-mode) (narrow-to-defun))
                  (t (narrow-to-page))))))
 
    (init-dwim-make-action
@@ -5808,7 +5843,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                   (eshell-send-input))))
 
      (init-dwim-make-action
-      :title "Open eshell in project root"
+      :title "cd to project root"
       :description "cd to the current project root in this eshell"
       :category "Eshell"
       :priority 72
@@ -5841,16 +5876,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :category "Eshell"
       :priority 65
       :predicate (lambda () (fboundp 'eshell-interrupt-process))
-      :action (lambda () (eshell-interrupt-process)))
-
-     (init-dwim-make-action
-      :title "Rename eshell buffer"
-      :description "Give this eshell buffer a custom name"
-      :category "Eshell"
-      :priority 55
-      :action (lambda ()
-                (let ((name (read-string "New name: " (buffer-name))))
-                  (rename-buffer (format "*eshell: %s*" name) t)))))))
+      :action (lambda () (eshell-interrupt-process))))))
 
 ;;; ── Emacs meta-actions (NEW) ──────────────────────────────────────────────
 
@@ -6438,6 +6464,7 @@ is retained for compatibility but returns nil."
       :description "Jump to the next diagnostic error"
       :category "Diagnostics"
       :priority 88
+      :predicate (lambda () (not (derived-mode-p 'compilation-mode)))
       :action (lambda ()
                 (cond
                  ((and (boundp 'flycheck-mode) flycheck-mode
@@ -6453,6 +6480,7 @@ is retained for compatibility but returns nil."
       :description "Jump to the previous diagnostic error"
       :category "Diagnostics"
       :priority 86
+      :predicate (lambda () (not (derived-mode-p 'compilation-mode)))
       :action (lambda ()
                 (cond
                  ((and (boundp 'flycheck-mode) flycheck-mode
@@ -7275,13 +7303,6 @@ is retained for compatibility but returns nil."
                              (point-max))))
                   (kill-new text)
                   (message "Copied %d chars from terminal" (length text)))))
-
-     (init-dwim-make-action
-      :title "Rename eat buffer"
-      :description "Give this terminal buffer a descriptive name"
-      :category "Terminal"
-      :priority 70
-      :action (lambda () (call-interactively #'rename-buffer)))
 
      (init-dwim-make-action
       :title "Send buffer to eat"
@@ -9110,91 +9131,6 @@ is retained for compatibility but returns nil."
                 (message "%s" (mapconcat #'prin1-to-string
                                          (treesit-parser-list)
                                          ", ")))))))
-
-;;; ── Context bookmarks ────────────────────────────────────────────────────
-
-(defun init-dwim-bookmark-context-provider ()
-  "Return context-aware bookmark actions."
-  (list
-   (init-dwim-make-action
-    :title "Bookmark current project"
-    :description "Create a bookmark at the current project root"
-    :category "Bookmark"
-    :priority 54
-    :predicate #'init-dwim--project-detected-p
-    :action (lambda ()
-              (let ((default-directory (init-dwim--project-root)))
-                (bookmark-set (read-string "Project bookmark name: "
-                                           (file-name-nondirectory
-                                            (directory-file-name default-directory)))))))
-   (init-dwim-make-action
-    :title "Bookmark current directory"
-    :description "Create a bookmark for default-directory"
-    :category "Bookmark"
-    :priority 52
-    :action (lambda ()
-              (let ((default-directory default-directory))
-                (bookmark-set (read-string "Directory bookmark name: "
-                                           (file-name-nondirectory
-                                            (directory-file-name default-directory)))))))
-   (init-dwim-make-action
-    :title "Bookmark current Org heading"
-    :description "Create a bookmark at the current Org heading"
-    :category "Bookmark"
-    :priority 58
-    :predicate (lambda () (derived-mode-p 'org-mode))
-    :action (lambda ()
-              (require 'org)
-              (org-back-to-heading t)
-              (bookmark-set (read-string "Org heading bookmark name: "
-                                         (nth 4 (org-heading-components))))))))
-
-;;; ── Snippet maintenance ──────────────────────────────────────────────────
-
-(defun init-dwim-yasnippet-maintenance-provider ()
-  "Return actions for maintaining Yasnippet collections."
-  (when (featurep 'yasnippet)
-    (list
-     (init-dwim-make-action
-      :title "Visit Yasnippet directories"
-      :description "Open the first configured snippet directory"
-      :category "Snippet"
-      :priority 46
-      :action (lambda ()
-                (let ((dir (car (if (listp yas-snippet-dirs)
-                                    yas-snippet-dirs
-                                  (list yas-snippet-dirs)))))
-                  (unless dir (user-error "No yas-snippet-dirs configured"))
-                  (dired dir))))
-
-     (init-dwim-make-action
-      :title "Reload Yasnippets"
-      :description "Reload all Yasnippet definitions"
-      :category "Snippet"
-      :priority 45
-      :predicate (lambda () (fboundp 'yas-reload-all))
-      :action #'yas-reload-all)
-
-     (init-dwim-make-action
-      :title "Create mode snippet"
-      :description "Create a new snippet for the current major mode"
-      :category "Snippet"
-      :priority 44
-      :predicate (lambda () (fboundp 'yas-new-snippet))
-      :action #'yas-new-snippet)
-
-     (init-dwim-make-action
-      :title "Create snippet from region"
-      :description "Use the active region as the body of a new snippet"
-      :category "Snippet"
-      :priority 47
-      :predicate #'use-region-p
-      :action (lambda ()
-                (let ((body (buffer-substring-no-properties
-                             (region-beginning) (region-end))))
-                  (yas-new-snippet)
-                  (goto-char (point-max))
-                  (insert body)))))))
 
 ;;; ── Transient ────────────────────────────────────────────────────────────
 
