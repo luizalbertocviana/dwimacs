@@ -347,7 +347,9 @@
   :defer t)
 
 (use-package eat
-  :defer t)
+  :defer t
+  :init
+  (add-hook 'eshell-load-hook #'eat-eshell-mode))
 
 ;;;; AI provider backends
 
