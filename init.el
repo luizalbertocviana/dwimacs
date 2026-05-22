@@ -795,6 +795,99 @@ actions."
 
 ;;;; Helpers
 
+(defun init-dwim--gptel-available-p ()
+  "Return non-nil when gptel is usable (loaded and a backend configured)."
+  (and (fboundp 'gptel-send)
+       (fboundp 'gptel-request)
+       (bound-and-true-p gptel-backend)))
+
+(defun init-dwim--gptel-in-chat-p ()
+  "Return non-nil when the current buffer is an active gptel chat buffer."
+  (and (fboundp 'gptel-mode)
+       (bound-and-true-p gptel-mode)))
+
+(defun init-dwim--gptel-open-chat (name &optional system-prompt)
+  "Pop to a gptel chat buffer named NAME, setting SYSTEM-PROMPT when given."
+  (let ((buf (get-buffer-create name)))
+    (with-current-buffer buf
+      (org-mode)
+      (unless (bound-and-true-p gptel-mode)
+        (gptel-mode 1))
+      (when system-prompt
+        (setq-local gptel--system-message system-prompt))
+      (goto-char (point-max)))
+    (pop-to-buffer buf)
+    buf))
+
+(defun init-dwim--gptel-send-with-prompt (system-prompt user-text &optional buf-name)
+  "Send USER-TEXT to the AI with SYSTEM-PROMPT as the system message.
+Opens (or reuses) a chat buffer named BUF-NAME (default \"*gptel-dwim*\"),
+inserts USER-TEXT and fires `gptel-send'."
+  (let* ((name (or buf-name "*gptel-dwim*"))
+         (buf  (init-dwim--gptel-open-chat name system-prompt)))
+    (with-current-buffer buf
+      (goto-char (point-max))
+      (unless (bolp) (insert "\n"))
+      (insert user-text "\n"))
+    (with-current-buffer buf
+      (gptel-send))))
+
+(defun init-dwim--gptel-request-to-buffer (system-prompt prompt &optional result-buf-name)
+  "Send PROMPT (with SYSTEM-PROMPT) via `gptel-request' and stream into a buffer.
+The result buffer RESULT-BUF-NAME (default \"*gptel-result*\") is shown."
+  (let* ((rname (or result-buf-name "*gptel-result*"))
+         (rbuf  (get-buffer-create rname)))
+    (with-current-buffer rbuf
+      (unless (eq major-mode 'org-mode) (org-mode))
+      (goto-char (point-max))
+      (unless (bolp) (insert "\n")))
+    (pop-to-buffer rbuf)
+    (gptel-request prompt
+      :system system-prompt
+      :buffer rbuf
+      :position (with-current-buffer rbuf (point-max-marker))
+      :stream t)))
+
+(defun init-dwim--gptel-region-text ()
+  "Return the active region as a string, or nil."
+  (when (use-region-p)
+    (buffer-substring-no-properties (region-beginning) (region-end))))
+
+(defun init-dwim--gptel-defun-text ()
+  "Return the text of the defun at point, or nil."
+  (save-excursion
+    (beginning-of-defun)
+    (let ((beg (point)))
+      (end-of-defun)
+      (buffer-substring-no-properties beg (point)))))
+
+(defun init-dwim--gptel-context-around-point (&optional radius)
+  "Return a string of text RADIUS chars around point (default 600)."
+  (let ((r (or radius 600)))
+    (buffer-substring-no-properties
+     (max (point-min) (- (point) r))
+     (min (point-max) (+ (point) r)))))
+
+(defun init-dwim--gptel-staged-diff ()
+  "Return the git staged diff for the current project, or nil."
+  (when-let ((root (init-dwim--project-root)))
+    (let ((diff (shell-command-to-string
+                 (format "git -C %s diff --cached"
+                         (shell-quote-argument root)))))
+      (unless (string-empty-p (string-trim diff)) diff))))
+
+(defun init-dwim--gptel-branch-log ()
+  "Return a one-line git log for the current branch vs main/master."
+  (when-let ((root (init-dwim--project-root)))
+    (or (let ((s (shell-command-to-string
+                  (format "git -C %s log main...HEAD --oneline 2>/dev/null"
+                          (shell-quote-argument root)))))
+          (unless (string-empty-p (string-trim s)) s))
+        (let ((s (shell-command-to-string
+                  (format "git -C %s log master...HEAD --oneline 2>/dev/null"
+                          (shell-quote-argument root)))))
+          (unless (string-empty-p (string-trim s)) s)))))
+
 (defun init-dwim-extra--make-prettier-action (category &optional priority)
   "Return a `Format with prettier' action for CATEGORY at PRIORITY."
   (init-dwim-make-action
@@ -4863,239 +4956,6 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
       :predicate (lambda () (fboundp 'evil-join))
       :action (lambda () (call-interactively #'evil-join))))))
 
-;;; ── AI (NEW) ──────────────────────────────────────────────────────────────
-
-(defun init-dwim-ai-provider ()
-  "Return AI-backend actions when a supported backend is available."
-  (when (init-dwim--ai-available-p)
-    (list
-     (init-dwim-make-action
-      :title "Open AI chat"
-      :description "Open an AI chat buffer (gptel or ellama)"
-      :category "AI"
-      :priority 70
-      :action (lambda ()
-                (cond
-                 ((fboundp 'gptel)
-                  (gptel "*init-dwim-ai*"))
-                 ((fboundp 'ellama-chat)
-                  (ellama-chat))
-                 (t
-                  (user-error "No AI chat command available")))))
-
-     (init-dwim-make-action
-      :title "Ask AI about buffer"
-      :description "Send the entire buffer to the AI for analysis"
-      :category "AI"
-      :priority 65
-      :action (lambda ()
-                (let ((prompt (read-string "Ask AI: " "Summarize or review this: ")))
-                  (init-dwim--ai-send-region (point-min) (point-max) prompt))))
-
-     (init-dwim-make-action
-      :title "Ask AI about symbol"
-      :description "Ask the AI to explain the symbol at point"
-      :category "AI"
-      :priority 62
-      :predicate (lambda () (init-dwim--symbol-string))
-      :action (lambda ()
-                (let* ((sym (init-dwim--symbol-string))
-                       (prompt (format "Explain `%s` in the context of %s:"
-                                       sym major-mode)))
-                  (init-dwim--ai-send-region
-                   (or (car (bounds-of-thing-at-point 'symbol)) (point))
-                   (or (cdr (bounds-of-thing-at-point 'symbol)) (point))
-                   prompt))))
-
-     (init-dwim-make-action
-      :title "AI: fix current error"
-      :description "Send the error at point and surrounding context to AI for a fix suggestion"
-      :category "AI"
-      :priority 60
-      :predicate (lambda ()
-                   (and (derived-mode-p 'prog-mode)
-                        (or (and (boundp 'flycheck-mode) flycheck-mode)
-                            (and (boundp 'flymake-mode) flymake-mode))))
-      :action (lambda ()
-                (let* ((beg (line-beginning-position))
-                       (end (min (point-max) (+ beg 500)))
-                       (prompt "Suggest a fix for the error in this code:"))
-                  (init-dwim--ai-send-region beg end prompt))))
-
-     (init-dwim-make-action
-      :title "AI: generate docstring"
-      :description "Ask AI to generate a docstring for the function at point"
-      :category "AI"
-      :priority 58
-      :predicate (lambda () (derived-mode-p 'prog-mode))
-      :action (lambda ()
-                (save-excursion
-                  (beginning-of-defun)
-                  (let* ((beg (point))
-                         (end (save-excursion (end-of-defun) (point)))
-                         (prompt "Write a concise docstring for this function:"))
-                    (init-dwim--ai-send-region beg end prompt)))))
-
-     (init-dwim-make-action
-      :title "AI: write unit tests for defun"
-      :description "Ask AI to generate unit tests for the function at point"
-      :category "AI"
-      :priority 55
-      :predicate (lambda () (derived-mode-p 'prog-mode))
-      :action (lambda ()
-                (save-excursion
-                  (beginning-of-defun)
-                  (let* ((beg (point))
-                         (end (save-excursion (end-of-defun) (point)))
-                         (prompt (format "Write unit tests for this %s function:"
-                                         major-mode)))
-                    (init-dwim--ai-send-region beg end prompt)))))
-
-     (init-dwim-make-action
-      :title "AI: explain error in *Messages*"
-      :description "Send the last error message to AI for an explanation"
-      :category "AI"
-      :priority 56
-      :action (lambda ()
-                (let* ((msgs (with-current-buffer "*Messages*"
-                               (buffer-substring-no-properties
-                                (max (point-min) (- (point-max) 1000))
-                                (point-max))))
-                       (prompt "Explain this Emacs error and how to fix it:"))
-                  (init-dwim--ai-send-region
-                   (with-current-buffer "*Messages*"
-                     (max (point-min) (- (point-max) 1000)))
-                   (with-current-buffer "*Messages*" (point-max))
-                   prompt)
-                  (ignore msgs))))
-
-     (init-dwim-make-action
-      :title "AI: suggest commit message"
-      :description "Ask AI to write a commit message from the staged diff"
-      :category "AI"
-      :priority 54
-      :predicate (lambda ()
-                   (and (fboundp 'magit-git-string)
-                        (init-dwim--project-root)))
-      :action (lambda ()
-                (let* ((diff (shell-command-to-string
-                              (format "git -C %s diff --cached"
-                                      (shell-quote-argument
-                                       (init-dwim--project-root)))))
-                       (prompt "Write a concise git commit message for this diff:"))
-                  (if (string-empty-p (string-trim diff))
-                      (user-error "No staged changes to generate a message for")
-                    (let ((buf (get-buffer-create "*init-dwim-gptel*")))
-                      (with-current-buffer buf
-                        (unless (eq major-mode 'org-mode) (org-mode))
-                        (goto-char (point-max))
-                        (insert "\n" prompt "\n\n#+begin_src diff\n" diff "#+end_src\n"))
-                      (pop-to-buffer buf)
-                      (when (fboundp 'gptel-send) (gptel-send)))))))
-
-     (init-dwim-make-action
-      :title "AI: explain in plain English"
-      :description "Translate the selected code to a plain English description"
-      :category "AI"
-      :priority 52
-      :predicate (lambda ()
-                   (and (init-dwim--ai-available-p)
-                        (use-region-p)))
-      :action (lambda ()
-                (let ((beg (region-beginning))
-                      (end (region-end)))
-                  (init-dwim--ai-send-region
-                   beg end
-                   "Explain what this code does in plain English, step by step:"))))
-
-     (init-dwim-make-action
-      :title "AI: suggest better name"
-      :description "Ask AI to propose a clearer name for the symbol at point"
-      :category "AI"
-      :priority 50
-      :predicate (lambda ()
-                   (and (init-dwim--ai-available-p)
-                        (init-dwim--symbol-string)))
-      :action (lambda ()
-                (when-let ((sym (init-dwim--symbol-string)))
-                  (let* ((ctx (buffer-substring-no-properties
-                               (max (point-min) (- (point) 300))
-                               (min (point-max) (+ (point) 300))))
-                         (prompt (format
-                                  "Suggest 3 clearer names for `%s' in this context:"
-                                  sym)))
-                    (init-dwim--ai-send-region
-                     (max (point-min) (- (point) 300))
-                     (min (point-max) (+ (point) 300))
-                     prompt)
-                    (ignore ctx)))))
-
-     (init-dwim-make-action
-      :title "AI: translate selection"
-      :description "Translate the selected text to a prompted language"
-      :category "AI"
-      :priority 46
-      :predicate (lambda ()
-                   (and (init-dwim--ai-available-p)
-                        (use-region-p)))
-      :action (lambda ()
-                (let* ((lang (read-string "Translate to: " "English"))
-                       (prompt (format "Translate the following text to %s:" lang)))
-                  (init-dwim--ai-send-region
-                   (region-beginning) (region-end) prompt))))
-
-     (init-dwim-make-action
-      :title "AI: summarize buffer"
-      :description "Ask AI for a brief summary of the current buffer"
-      :category "AI"
-      :priority 44
-      :predicate #'init-dwim--ai-available-p
-      :action (lambda ()
-                (init-dwim--ai-send-region
-                 (point-min) (point-max)
-                 "Provide a concise 2-3 sentence summary of this content:")))
-
-     (init-dwim-make-action
-      :title "AI: improve prose style"
-      :description "Ask AI to rewrite the selection for clarity and flow"
-      :category "AI"
-      :priority 42
-      :predicate (lambda ()
-                   (and (init-dwim--ai-available-p)
-                        (use-region-p)
-                        (or (derived-mode-p 'text-mode)
-                            (derived-mode-p 'org-mode)
-                            (derived-mode-p 'markdown-mode))))
-      :action (lambda ()
-                (init-dwim--ai-send-region
-                 (region-beginning) (region-end)
-                 "Rewrite this text for clarity, concision, and good prose style. Preserve the meaning exactly:")))
-
-     (init-dwim-make-action
-      :title "AI: review PR description"
-      :description "Ask AI to write or improve a pull request description"
-      :category "AI"
-      :priority 40
-      :predicate (lambda ()
-                   (and (init-dwim--ai-available-p)
-                        (init-dwim--project-detected-p)))
-      :action (lambda ()
-                (let* ((diff (shell-command-to-string
-                              (format "git -C %s diff main...HEAD --stat"
-                                      (shell-quote-argument
-                                       (init-dwim--project-root)))))
-                       (log (shell-command-to-string
-                             (format "git -C %s log main...HEAD --oneline"
-                                     (shell-quote-argument
-                                      (init-dwim--project-root)))))
-                       (prompt "Write a clear pull request description with a summary, motivation, and list of changes:"))
-                  (let ((buf (get-buffer-create "*gptel-pr*")))
-                    (with-current-buffer buf
-                      (erase-buffer)
-                      (insert prompt "\n\nCommits:\n" log "\n\nChanged files:\n" diff))
-                    (pop-to-buffer buf)
-                    (when (fboundp 'gptel-send) (gptel-send)))))))))
-
 ;;; ── Compilation buffer ────────────────────────────────────────────────────
 
 (defun init-dwim-compile-provider ()
@@ -8093,137 +7953,6 @@ is retained for compatibility but returns nil."
                 (open-line 1)
                 (insert "breakpoint()  # noqa")
                 (python-indent-line))))))
-
-;;; ── gptel buffer ──────────────────────────────────────────────────────────
-
-(defun init-dwim-gptel-provider ()
-  "Return actions specific to gptel chat buffers."
-  (when (init-dwim--gptel-buffer-p)
-    (list
-     (init-dwim-make-action
-      :title "Send to AI"
-      :description "Send the current input to the AI backend"
-      :category "AI"
-      :priority 100
-      :predicate (lambda () (fboundp 'gptel-send))
-      :action (lambda () (gptel-send)))
-
-     (init-dwim-make-action
-      :title "Change AI model"
-      :description "Switch the model used by gptel in this buffer"
-      :category "AI"
-      :priority 85
-      :predicate (lambda () (fboundp 'gptel-menu))
-      :action (lambda () (call-interactively #'gptel-menu)))
-
-     (init-dwim-make-action
-      :title "Set system prompt"
-      :description "Edit the system prompt for this gptel session"
-      :category "AI"
-      :priority 80
-      :predicate (lambda () (fboundp 'gptel-system-prompt))
-      :action (lambda () (call-interactively #'gptel-system-prompt)))
-
-     (init-dwim-make-action
-      :title "Copy last AI response"
-      :description "Copy the most recent AI reply to the kill ring"
-      :category "AI"
-      :priority 75
-      :action (lambda ()
-                (save-excursion
-                  (goto-char (point-max))
-                  ;; gptel marks responses with text-property gptel 'response
-                  (let* ((end (point))
-                         (beg (or (previous-single-property-change
-                                   end 'gptel (current-buffer) (point-min))
-                                  (point-min)))
-                         (text (buffer-substring-no-properties beg end)))
-                    (kill-new (string-trim text))
-                    (message "Last response copied (%d chars)" (length text))))))
-
-     (init-dwim-make-action
-      :title "Clear chat buffer"
-      :description "Erase the entire gptel conversation"
-      :category "AI"
-      :priority 60
-      :action (lambda ()
-                (when (yes-or-no-p "Clear gptel conversation? ")
-                  (let ((inhibit-read-only t))
-                    (erase-buffer))
-                  (message "Conversation cleared"))))
-
-     (init-dwim-make-action
-      :title "New gptel chat buffer"
-      :description "Create a fresh gptel conversation buffer"
-      :category "AI"
-      :priority 90
-      :predicate (lambda () (fboundp 'gptel))
-      :action (lambda ()
-                (let ((buf (generate-new-buffer-name "*gptel*")))
-                  (gptel buf)
-                  (pop-to-buffer buf))))
-
-     (init-dwim-make-action
-      :title "Abort gptel request"
-      :description "Cancel the in-flight AI request"
-      :category "AI"
-      :priority 85
-      :predicate (lambda ()
-                   (and (fboundp 'gptel-abort)
-                        (bound-and-true-p gptel--request-buffer)))
-      :action (lambda () (gptel-abort (current-buffer))))
-
-     (init-dwim-make-action
-      :title "AI: refactor selection"
-      :description "Ask gptel to refactor the selected region in place"
-      :category "AI"
-      :priority 72
-      :predicate (lambda ()
-                   (and (fboundp 'gptel-rewrite-menu)
-                        (use-region-p)))
-      :action (lambda () (call-interactively #'gptel-rewrite-menu)))
-
-     (init-dwim-make-action
-      :title "AI: insert completion at point"
-      :description "Ask the AI to complete the text at point"
-      :category "AI"
-      :priority 68
-      :predicate (lambda () (fboundp 'gptel-send))
-      :action (lambda ()
-                (let ((ctx (buffer-substring-no-properties
-                            (max (point-min) (- (point) 500))
-                            (point))))
-                  (with-current-buffer (get-buffer-create "*gptel-complete*")
-                    (erase-buffer)
-                    (insert ctx)
-                    (goto-char (point-max))
-                    (gptel-send)))))
-
-     (init-dwim-make-action
-      :title "Toggle gptel streaming"
-      :description "Switch between streaming and batch AI responses"
-      :category "AI"
-      :priority 50
-      :predicate (lambda () (boundp 'gptel-stream))
-      :action (lambda ()
-                (setq gptel-stream (not gptel-stream))
-                (message "gptel streaming: %s" (if gptel-stream "on" "off"))))
-     
-     (init-dwim-make-action
-      :title "Save chat to file"
-      :description "Write the gptel buffer to a dated log file"
-      :category "AI"
-      :priority 55
-      :action (lambda ()
-                (let* ((dir (expand-file-name "gptel-logs/"
-                                              user-emacs-directory))
-                       (_ (make-directory dir t))
-                       (file (expand-file-name
-                              (format "chat-%s.org"
-                                      (format-time-string "%Y%m%d-%H%M%S"))
-                              dir)))
-                  (write-region (point-min) (point-max) file)
-                  (message "Saved to %s" file)))))))
 
 ;;; ── Package management ────────────────────────────────────────────────────
 
@@ -11690,6 +11419,577 @@ is retained for compatibility but returns nil."
       :predicate (lambda () (fboundp 'highlight-symbol-prev))
       :action (lambda () (highlight-symbol-prev))))))
 
+;;; ── init-dwim-gptel-provider (unified, replaces ai-provider + gptel-provider) ──
+
+(defun init-dwim-gptel-provider ()
+  "Unified gptel DWIM provider.
+ - Global AI actions whenever gptel is loaded (chat, code, text, git workflows)
+ - gptel-buffer-specific session management actions
+ - Context-sensitive system prompts per action
+ - In-place rewrite and completion via `gptel-request'"
+  (when (init-dwim--gptel-available-p)
+    (let* ((in-chat       (init-dwim--gptel-in-chat-p))
+           (in-prog       (derived-mode-p 'prog-mode))
+           (in-text       (or (derived-mode-p 'text-mode)
+                              (derived-mode-p 'org-mode)
+                              (derived-mode-p 'markdown-mode)))
+           (has-region    (use-region-p))
+           (has-symbol    (init-dwim--symbol-string))
+           (has-defun     (and in-prog (save-excursion
+                                         (ignore-errors
+                                           (beginning-of-defun) t))))
+           (has-staged    (init-dwim--gptel-staged-diff))
+           (has-project   (init-dwim--project-detected-p))
+           (coding-sys    (symbol-name major-mode))
+           (actions       nil))
+
+      ;; ── 1. Open / start a new chat ──────────────────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "open chat"
+        :description "Open a fresh gptel chat buffer with the engineering system prompt"
+        :category "AI"
+        :priority 70
+        :action (lambda ()
+                  (init-dwim--gptel-open-chat
+                   (generate-new-buffer-name "*gptel*")
+                   init-dwim-ai-system-prompt)))
+       actions)
+
+      ;; ── 2. Ask ad-hoc question (freeform) ───────────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "ask a question"
+        :description "Type a freeform question and send it to the AI"
+        :category "AI"
+        :priority 68
+        :action (lambda ()
+                  (let ((q (read-string "Ask AI: ")))
+                    (init-dwim--gptel-send-with-prompt
+                     init-dwim-ai-system-prompt q))))
+       actions)
+
+      ;; ── 3. Ask with a named persona / directive ──────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "ask with preset directive"
+        :description "Pick a saved gptel directive (persona) then ask a question"
+        :category "AI"
+        :priority 64
+        :predicate (lambda () (and (boundp 'gptel-directives)
+                                   gptel-directives))
+        :action (lambda ()
+                  (let* ((choices (mapcar (lambda (d) (symbol-name (car d)))
+                                          gptel-directives))
+                         (name    (completing-read "Directive: " choices nil t))
+                         (sym     (intern name))
+                         (prompt  (alist-get sym gptel-directives))
+                         (q       (read-string "Ask: ")))
+                    (init-dwim--gptel-send-with-prompt
+                     (if (functionp prompt) (funcall prompt) prompt)
+                     q (format "*gptel[%s]*" name)))))
+       actions)
+
+      ;; ── 4. Region → explain ─────────────────────────────────────────────
+      (when has-region
+        (push
+         (init-dwim-make-action
+          :title "explain selection"
+          :description "Ask the AI to explain the selected text or code"
+          :category "AI"
+          :priority 80
+          :action (lambda ()
+                    (let ((text (init-dwim--gptel-region-text)))
+                      (init-dwim--gptel-send-with-prompt
+                       (if in-prog
+                           (format "You are a senior %s expert. Explain code clearly and concisely." coding-sys)
+                         "You are a helpful assistant. Explain the following text clearly.")
+                       (format "Explain this:\n\n%s" text)))))
+         actions))
+
+      ;; ── 5. Region → plain-English translation ───────────────────────────
+      (when (and has-region in-prog)
+        (push
+         (init-dwim-make-action
+          :title "code → plain English"
+          :description "Translate the selected code to a step-by-step plain English description"
+          :category "AI"
+          :priority 78
+          :action (lambda ()
+                    (let ((text (init-dwim--gptel-region-text)))
+                      (init-dwim--gptel-send-with-prompt
+                       "You are a patient coding tutor. Translate code to plain English, step by step."
+                       (format "Explain what this %s code does in plain English, step by step:\n\n%s"
+                               coding-sys text)))))
+         actions))
+
+      ;; ── 6. Region → improve prose ────────────────────────────────────────
+      (when (and has-region in-text)
+        (push
+         (init-dwim-make-action
+          :title "improve prose"
+          :description "Rewrite the selected text for clarity, concision, and flow"
+          :category "AI"
+          :priority 76
+          :action (lambda ()
+                    (let ((text (init-dwim--gptel-region-text)))
+                      (init-dwim--gptel-send-with-prompt
+                       "You are an expert editor. Improve prose for clarity, concision, and flow. Preserve meaning exactly."
+                       (format "Rewrite for clarity and flow:\n\n%s" text)))))
+         actions))
+
+      ;; ── 7. Region → in-place rewrite (gptel-rewrite) ────────────────────
+      (when (and has-region (fboundp 'gptel-rewrite))
+        (push
+         (init-dwim-make-action
+          :title "rewrite / refactor in place"
+          :description "Use gptel-rewrite to refactor or rewrite the selected region in place"
+          :category "AI"
+          :priority 82
+          :action (lambda ()
+                    (call-interactively #'gptel-rewrite)))
+         actions))
+
+      ;; ── 8. Region → translate to language ───────────────────────────────
+      (when has-region
+        (push
+         (init-dwim-make-action
+          :title "translate selection"
+          :description "Translate the selected text to a prompted human language"
+          :category "AI"
+          :priority 58
+          :action (lambda ()
+                    (let* ((lang (read-string "Translate to language: " "English"))
+                           (text (init-dwim--gptel-region-text)))
+                      (init-dwim--gptel-send-with-prompt
+                       (format "You are a professional translator. Translate accurately to %s." lang)
+                       (format "Translate to %s:\n\n%s" lang text)))))
+         actions))
+
+      ;; ── 9. Defun → generate docstring ────────────────────────────────────
+      (when has-defun
+        (push
+         (init-dwim-make-action
+          :title "generate docstring"
+          :description "Ask the AI to write a docstring for the function at point"
+          :category "AI"
+          :priority 74
+          :action (lambda ()
+                    (let ((code (init-dwim--gptel-defun-text)))
+                      (init-dwim--gptel-send-with-prompt
+                       (format "You are a %s documentation expert. Write concise, accurate docstrings." coding-sys)
+                       (format "Write a concise docstring for this function. Output only the docstring itself:\n\n%s"
+                               code)))))
+         actions))
+
+      ;; ── 10. Defun → unit tests ───────────────────────────────────────────
+      (when has-defun
+        (push
+         (init-dwim-make-action
+          :title "write unit tests for function"
+          :description "Generate unit tests for the function at point"
+          :category "AI"
+          :priority 72
+          :action (lambda ()
+                    (let ((code (init-dwim--gptel-defun-text)))
+                      (init-dwim--gptel-send-with-prompt
+                       (format "You are a senior %s engineer. Write thorough, idiomatic unit tests." coding-sys)
+                       (format "Write unit tests for this %s function:\n\n%s"
+                               coding-sys code)))))
+         actions))
+
+      ;; ── 11. Defun → time/space complexity analysis ───────────────────────
+      (when has-defun
+        (push
+         (init-dwim-make-action
+          :title "analyze complexity"
+          :description "Ask the AI for time and space complexity of the function at point"
+          :category "AI"
+          :priority 60
+          :action (lambda ()
+                    (let ((code (init-dwim--gptel-defun-text)))
+                      (init-dwim--gptel-send-with-prompt
+                       "You are an algorithms expert. Analyze code complexity concisely."
+                       (format "Analyze the time and space complexity of this function. Be concise:\n\n%s"
+                               code)))))
+         actions))
+
+      ;; ── 12. Symbol → explain ─────────────────────────────────────────────
+      (when has-symbol
+        (push
+         (init-dwim-make-action
+          :title "explain symbol at point"
+          :description "Explain what the symbol at point means in the current context"
+          :category "AI"
+          :priority 66
+          :action (lambda ()
+                    (let* ((sym (init-dwim--symbol-string))
+                           (ctx (init-dwim--gptel-context-around-point 400)))
+                      (init-dwim--gptel-send-with-prompt
+                       (format "You are a senior %s expert. Be concise." coding-sys)
+                       (format "Explain `%s` in the context of this %s code:\n\n%s"
+                               sym coding-sys ctx)))))
+         actions))
+
+      ;; ── 13. Symbol → suggest better name ─────────────────────────────────
+      (when has-symbol
+        (push
+         (init-dwim-make-action
+          :title "suggest better name for symbol"
+          :description "Ask the AI to propose 3 clearer names for the symbol at point"
+          :category "AI"
+          :priority 55
+          :action (lambda ()
+                    (let* ((sym (init-dwim--symbol-string))
+                           (ctx (init-dwim--gptel-context-around-point 300)))
+                      (init-dwim--gptel-send-with-prompt
+                       "You are a senior engineer focused on code readability."
+                       (format "Suggest 3 clearer names for `%s` given this context. Briefly justify each:\n\n%s"
+                               sym ctx)))))
+         actions))
+
+      ;; ── 14. Diagnostic / error fix ───────────────────────────────────────
+      (when (and in-prog
+                 (or (bound-and-true-p flymake-mode)
+                     (bound-and-true-p flycheck-mode)))
+        (push
+         (init-dwim-make-action
+          :title "fix error at point"
+          :description "Send the error at point and surrounding code to the AI for a fix"
+          :category "AI"
+          :priority 85
+          :action (lambda ()
+                    (let* ((diag (or (when-let ((diags (flymake-diagnostics (point))))
+                                       (flymake-diagnostic-text (car diags)))
+                                     ""))
+                           (code (buffer-substring-no-properties
+                                  (line-beginning-position)
+                                  (min (point-max) (+ (line-beginning-position) 600)))))
+                      (init-dwim--gptel-send-with-prompt
+                       (format "You are a senior %s engineer. Suggest a minimal fix. Be concise." coding-sys)
+                       (format "Error: %s\n\nCode:\n%s\n\nSuggest a fix." diag code)))))
+         actions))
+
+      ;; ── 15. Explain last *Messages* error ────────────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "explain last Emacs error"
+        :description "Send the tail of *Messages* to the AI to explain the last error"
+        :category "AI"
+        :priority 62
+        :predicate (lambda () (get-buffer "*Messages*"))
+        :action (lambda ()
+                  (let ((msgs (with-current-buffer "*Messages*"
+                                (buffer-substring-no-properties
+                                 (max (point-min) (- (point-max) 1200))
+                                 (point-max)))))
+                    (init-dwim--gptel-send-with-prompt
+                     "You are an Emacs expert. Explain Emacs errors and how to fix them concisely."
+                     (format "Explain this Emacs error and how to fix it:\n\n%s" msgs)))))
+       actions)
+
+      ;; ── 16. Summarize buffer ─────────────────────────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "summarize buffer"
+        :description "Ask the AI for a concise summary of the current buffer"
+        :category "AI"
+        :priority 52
+        :action (lambda ()
+                  (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+                    (init-dwim--gptel-request-to-buffer
+                     (if in-prog
+                         (format "You are a senior %s engineer. Summarize code concisely." coding-sys)
+                       "You are a helpful assistant. Summarize content clearly.")
+                     (format "Provide a concise 3-5 sentence summary of this content:\n\n%s"
+                             (substring text 0 (min (length text) 8000)))
+                     "*gptel-summary*"))))
+       actions)
+
+      ;; ── 17. AI inline completion at point ────────────────────────────────
+      (when in-prog
+        (push
+         (init-dwim-make-action
+          :title "complete code at point"
+          :description "Ask the AI to suggest a completion for the code before point"
+          :category "AI"
+          :priority 67
+          :action (lambda ()
+                    (let ((ctx (buffer-substring-no-properties
+                                (max (point-min) (- (point) 800))
+                                (point))))
+                      (init-dwim--gptel-request-to-buffer
+                       (format "You are a %s code completion engine. Output only the continuation, no explanation." coding-sys)
+                       (format "Continue this %s code naturally:\n\n%s" coding-sys ctx)
+                       "*gptel-completion*"))))
+         actions))
+
+      ;; ── 18. Git: commit message from staged diff ─────────────────────────
+      (when has-staged
+        (push
+         (init-dwim-make-action
+          :title "draft commit message"
+          :description "Generate a conventional commit message from the staged diff"
+          :category "AI"
+          :priority 90
+          :action (lambda ()
+                    (let ((diff (init-dwim--gptel-staged-diff)))
+                      (init-dwim--gptel-request-to-buffer
+                       "You are an expert at writing git commit messages. Follow the Conventional Commits spec. Be concise. Output only the commit message."
+                       (format "Write a conventional commit message for this diff:\n\n#+begin_src diff\n%s\n#+end_src"
+                               diff)
+                       "*gptel-commit-msg*"))))
+         actions))
+
+      ;; ── 19. Git: pull request description ───────────────────────────────
+      (when (and has-project (init-dwim--gptel-branch-log))
+        (push
+         (init-dwim-make-action
+          :title "draft pull request description"
+          :description "Generate a PR description from branch commits and diff stat"
+          :category "AI"
+          :priority 75
+          :action (lambda ()
+                    (let* ((root   (init-dwim--project-root))
+                           (log    (or (init-dwim--gptel-branch-log) ""))
+                           (stat   (shell-command-to-string
+                                    (format "git -C %s diff main...HEAD --stat 2>/dev/null || git -C %s diff master...HEAD --stat 2>/dev/null"
+                                            (shell-quote-argument root)
+                                            (shell-quote-argument root)))))
+                      (init-dwim--gptel-request-to-buffer
+                       "You are a senior engineer. Write clear, structured pull request descriptions with: summary, motivation, and list of changes."
+                       (format "Write a pull request description.\n\nCommits:\n%s\n\nChanged files:\n%s"
+                               log stat)
+                       "*gptel-pr-description*"))))
+         actions))
+
+      ;; ── 20. Git: explain last commit ─────────────────────────────────────
+      (when has-project
+        (push
+         (init-dwim-make-action
+          :title "explain last commit"
+          :description "Summarize and explain the last git commit in this project"
+          :category "AI"
+          :priority 56
+          :action (lambda ()
+                    (let* ((root  (init-dwim--project-root))
+                           (patch (shell-command-to-string
+                                   (format "git -C %s show --stat HEAD 2>/dev/null"
+                                           (shell-quote-argument root)))))
+                      (init-dwim--gptel-request-to-buffer
+                       "You are an expert code reviewer. Explain commits clearly."
+                       (format "Explain what this git commit does:\n\n%s" patch)
+                       "*gptel-commit-explain*"))))
+         actions))
+
+      ;; ── 21. Code review for region or defun ──────────────────────────────
+      (when (or has-region has-defun)
+        (push
+         (init-dwim-make-action
+          :title "code review"
+          :description "Ask the AI to review the selected code for bugs, style, and improvements"
+          :category "AI"
+          :priority 77
+          :action (lambda ()
+                    (let ((code (or (init-dwim--gptel-region-text)
+                                    (init-dwim--gptel-defun-text))))
+                      (init-dwim--gptel-send-with-prompt
+                       (format "You are a senior %s code reviewer. Identify bugs, style issues, and improvement opportunities. Be concise and actionable." coding-sys)
+                       (format "Review this %s code:\n\n%s" coding-sys code)))))
+         actions))
+
+      ;; ── 23. Org babel: explain src block ─────────────────────────────────
+      (when (and (derived-mode-p 'org-mode)
+                 (fboundp 'org-babel-where-is-src-block-head)
+                 (org-babel-where-is-src-block-head))
+        (push
+         (init-dwim-make-action
+          :title "explain Org src block"
+          :description "Send the current Org babel source block to the AI for explanation"
+          :category "AI"
+          :priority 73
+          :action (lambda ()
+                    (save-excursion
+                      (let* ((info (org-babel-get-src-block-info))
+                             (lang (car info))
+                             (body (cadr info)))
+                        (init-dwim--gptel-send-with-prompt
+                         (format "You are a %s expert and Org mode user. Explain code clearly." lang)
+                         (format "Explain this %s src block:\n\n%s" lang body))))))
+         actions))
+
+      ;; ── 24. gptel-menu (transient) ───────────────────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "open gptel menu"
+        :description "Open gptel's transient menu to configure model, backend, system prompt, etc."
+        :category "AI"
+        :priority 45
+        :predicate (lambda () (fboundp 'gptel-menu))
+        :action (lambda () (call-interactively #'gptel-menu)))
+       actions)
+
+      ;; ── 26. Set / edit system prompt ─────────────────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "set system prompt"
+        :description "Edit the gptel system prompt for the current buffer or session"
+        :category "AI"
+        :priority 43
+        :action (lambda ()
+                  (let ((new-prompt (read-string "System prompt: "
+                                                 (bound-and-true-p gptel--system-message))))
+                    (if in-chat
+                        (setq-local gptel--system-message new-prompt)
+                      (setq gptel-system-prompt new-prompt))
+                    (message "gptel system prompt updated."))))
+       actions)
+
+      ;; ── 27. Toggle streaming ─────────────────────────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "toggle streaming"
+        :description "Toggle gptel streaming on/off (affects response display)"
+        :category "AI"
+        :priority 38
+        :predicate (lambda () (boundp 'gptel-stream))
+        :action (lambda ()
+                  (setq gptel-stream (not gptel-stream))
+                  (message "gptel streaming: %s" (if gptel-stream "on" "off"))))
+       actions)
+
+      ;; ── 28. Abort in-flight request ──────────────────────────────────────
+      (push
+       (init-dwim-make-action
+        :title "abort request"
+        :description "Cancel the currently running gptel request"
+        :category "AI"
+        :priority 95
+        :predicate (lambda ()
+                     (and (fboundp 'gptel-abort)
+                          (bound-and-true-p gptel--request-buffer)))
+        :action (lambda () (gptel-abort (current-buffer))))
+       actions)
+
+      ;; ════════════════════════════════════════════════════════════════════
+      ;; gptel CHAT BUFFER-ONLY actions (only when inside a gptel buffer)
+      ;; ════════════════════════════════════════════════════════════════════
+
+      (when in-chat
+        ;; 29. Send current input
+        (push
+         (init-dwim-make-action
+          :title "send message"
+          :description "Send the current input to the AI (gptel-send)"
+          :category "AI"
+          :priority 100
+          :action (lambda () (gptel-send)))
+         actions)
+
+        ;; 30. New chat buffer
+        (push
+         (init-dwim-make-action
+          :title "new chat buffer"
+          :description "Open a fresh gptel conversation buffer"
+          :category "AI"
+          :priority 88
+          :action (lambda ()
+                    (init-dwim--gptel-open-chat
+                     (generate-new-buffer-name "*gptel*")
+                     (bound-and-true-p gptel--system-message))))
+         actions)
+
+        ;; 33. Save chat to a dated log file
+        (push
+         (init-dwim-make-action
+          :title "save chat to log file"
+          :description "Write this gptel conversation to a dated .org log file"
+          :category "AI"
+          :priority 55
+          :action (lambda ()
+                    (let* ((dir  (expand-file-name "gptel-logs/" user-emacs-directory))
+                           (_    (make-directory dir t))
+                           (file (expand-file-name
+                                  (format "chat-%s.org"
+                                          (format-time-string "%Y%m%d-%H%M%S"))
+                                  dir)))
+                      (write-region (point-min) (point-max) file)
+                      (message "Saved to %s" file))))
+         actions)
+
+        ;; 34. Restore / load a previous chat session
+        (push
+         (init-dwim-make-action
+          :title "load saved chat session"
+          :description "Open a previous chat log from the gptel-logs directory"
+          :category "AI"
+          :priority 52
+          :action (lambda ()
+                    (let* ((dir  (expand-file-name "gptel-logs/" user-emacs-directory))
+                           (file (read-file-name "Load chat: " dir nil t)))
+                      (find-file file)
+                      (when (fboundp 'gptel-mode) (gptel-mode 1)))))
+         actions)
+
+        ;; 35. Clear conversation
+        (push
+         (init-dwim-make-action
+          :title "clear chat buffer"
+          :description "Erase the entire gptel conversation (with confirmation)"
+          :category "AI"
+          :priority 48
+          :action (lambda ()
+                    (when (yes-or-no-p "Clear gptel conversation? ")
+                      (let ((inhibit-read-only t))
+                        (erase-buffer))
+                      (message "Conversation cleared."))))
+         actions)
+
+        ;; 36. Add current file as context
+        (push
+         (init-dwim-make-action
+          :title "add file as context"
+          :description "Pick a file and add it as gptel context for subsequent requests"
+          :category "AI"
+          :priority 60
+          :predicate (lambda () (fboundp 'gptel-context-add-file))
+          :action (lambda ()
+                    (let ((file (read-file-name "Add file as context: ")))
+                      (gptel-context-add-file file)
+                      (message "Added %s as gptel context." (file-name-nondirectory file)))))
+         actions)
+
+        ;; 37. Add region from another buffer as context
+        (push
+         (init-dwim-make-action
+          :title "add buffer region as context"
+          :description "Mark a region in any buffer and add it as gptel context"
+          :category "AI"
+          :priority 57
+          :predicate (lambda () (fboundp 'gptel-context-add))
+          :action (lambda ()
+                    (let ((buf (read-buffer "Buffer to pull context from: ")))
+                      (with-current-buffer buf
+                        (unless (use-region-p)
+                          (user-error "No active region in that buffer"))
+                        (gptel-context-add))
+                      (message "Region from %s added as context." buf))))
+         actions)
+
+        ;; 38. Show / clear gptel context
+        (push
+         (init-dwim-make-action
+          :title "clear context"
+          :description "clear what is currently included as gptel context"
+          :category "AI"
+          :priority 53
+          :predicate (lambda () (fboundp 'gptel-context-remove))
+          :action (lambda () (call-interactively #'gptel-context-remove-all)))
+         actions))
+
+      ;; Return the collected actions
+      (nreverse actions))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -11728,10 +12028,8 @@ is retained for compatibility but returns nil."
         init-dwim-org-babel-provider
         init-dwim-spelling-provider
         init-dwim-snippet-provider
-        init-dwim-yasnippet-maintenance-provider
         init-dwim-abbrev-provider
         init-dwim-bookmark-provider
-        init-dwim-bookmark-context-provider
         init-dwim-file-template-provider
 
         ;; Files, buffers, windows, tabs, and sessions.
@@ -11800,7 +12098,6 @@ is retained for compatibility but returns nil."
         init-dwim-vundo-provider
         
         ;; AI integrations.
-        init-dwim-ai-provider
         init-dwim-gptel-provider
 
         ;; Emacs meta/help/package operations.
