@@ -5995,7 +5995,7 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :title "Explain DWIM actions"
     :description "Show why DWIM actions are available or filtered out"
     :category "Session"
-    :priority 120
+    :priority 10
     :predicate (lambda () (fboundp 'init-dwim-explain))
     :action (lambda ()
               (call-interactively #'init-dwim-explain)))
