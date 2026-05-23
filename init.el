@@ -441,6 +441,23 @@
   ;; Register as xref backend — lowest priority so Eglot wins when active.
   (add-hook 'xref-backend-functions #'dumb-jump-xref-activate))
 
+(use-package flash
+  :commands (flash-jump flash-jump-continue
+                        flash-treesitter)
+  :custom
+  (flash-multi-window t)
+  :init
+  ;; Evil integration (simple setup)
+  (with-eval-after-load 'evil
+    (require 'flash-evil)
+    (flash-evil-setup t))  ; t = also set up f/t/F/T char motions
+  :config
+  ;; Search integration (labels during C-s, /, ?)
+  (require 'flash-isearch)
+  (flash-isearch-mode 1)
+  (define-key evil-normal-state-map (kbd "s") #'flash-jump)
+  (define-key evil-emacs-state-map (kbd "s") #'flash-jump))
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'thingatpt)
