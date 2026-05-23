@@ -150,6 +150,7 @@
 
 (use-package evil-surround
   :after evil
+  :demand t
   :config
   (global-evil-surround-mode 1))
 
