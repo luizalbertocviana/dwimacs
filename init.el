@@ -431,6 +431,16 @@
   ;; Keep fields aligned so tables are easier to read.
   (csv-mode . csv-align-mode))
 
+(use-package dumb-jump
+  :demand t
+  :custom
+  (dumb-jump-prefer-searcher 'rg)
+  (xref-show-definitions-function #'consult-xref)
+  (xref-show-xrefs-function       #'consult-xref)
+  :config
+  ;; Register as xref backend — lowest priority so Eglot wins when active.
+  (add-hook 'xref-backend-functions #'dumb-jump-xref-activate))
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'thingatpt)
