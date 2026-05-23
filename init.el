@@ -446,6 +446,7 @@
                         flash-treesitter)
   :custom
   (flash-multi-window t)
+  (flash-char-jump-labels t)
   :init
   ;; Evil integration (simple setup)
   (with-eval-after-load 'evil
