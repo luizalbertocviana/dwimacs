@@ -447,6 +447,8 @@
   :custom
   (flash-multi-window t)
   (flash-char-jump-labels t)
+  (flash-autojump t)
+  (flash-labels "asdflkjhg")
   :init
   ;; Evil integration (simple setup)
   (with-eval-after-load 'evil
