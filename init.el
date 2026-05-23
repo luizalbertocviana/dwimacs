@@ -461,6 +461,11 @@
   (define-key evil-normal-state-map (kbd "s") #'flash-jump)
   (define-key evil-emacs-state-map (kbd "s") #'flash-jump))
 
+(use-package deadgrep
+  :defer t
+  :config
+  (evil-set-initial-state 'deadgrep-mode 'emacs))
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'thingatpt)
@@ -3717,6 +3722,23 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                                     (init-dwim--symbol-string)
                                     "")))))
 
+       (init-dwim-make-action
+        :title "Search project (deadgrep)"
+        :description "Interactive ripgrep results buffer for the current project"
+        :category "Project"
+        :priority 71
+        :predicate (lambda ()
+                     (and (fboundp 'deadgrep)
+                          (init-dwim--project-detected-p)))
+        :action (lambda ()
+                  (deadgrep
+                   (read-string "Search: "
+                                (or (let ((region (init-dwim--region-string)))
+                                      (deactivate-mark)
+                                      region)
+                                    (init-dwim--symbol-string)
+                                    "")))))
+       
        (init-dwim-make-action
         :title "Open project file"
         :description "Find a file in the current project"
