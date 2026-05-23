@@ -12,7 +12,7 @@
 ;; 2. Start Emacs.  straight.el will bootstrap itself and install packages.
 ;;
 ;; The only custom global keybinding defined here is SPC SPC -> init-dwim.
-;; All other actions are discovered by doom-dwim providers at runtime.
+;; All other actions are discovered by init-dwim providers at runtime.
 
 ;;; Code:
 
