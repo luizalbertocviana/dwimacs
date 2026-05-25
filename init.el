@@ -3269,6 +3269,31 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
 
 ;;; ── Dired ─────────────────────────────────────────────────────────────────
 
+(defun init-dwim-find-dired-provider ()
+  "Return file-search actions that produce Dired buffers."
+  (list
+   (init-dwim-make-action
+    :title "Find files by name (find-name-dired)"
+    :description "Search for files by glob pattern under a directory"
+    :category "File"
+    :priority 62
+    :action (lambda () (call-interactively #'find-name-dired)))
+
+   (init-dwim-make-action
+    :title "Find files containing (find-grep-dired)"
+    :description "Search for files containing a grep pattern under a directory"
+    :category "File"
+    :priority 60
+    :action (lambda () (call-interactively #'find-grep-dired)))
+
+   (init-dwim-make-action
+    :title "Locate file (system locate)"
+    :description "Search the system locate database for files by name"
+    :category "File"
+    :priority 58
+    :predicate (lambda () (fboundp 'locate))
+    :action (lambda () (call-interactively #'locate)))))
+
 (defun init-dwim-dired-provider ()
   "Return actions relevant to Dired buffers."
   (when (derived-mode-p 'dired-mode)
@@ -5990,6 +6015,15 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                 (message "tab-width set to %d" n))))
    
    (init-dwim-make-action
+    :title "adjust global text scale"
+    :description "adjust text in every buffer"
+    :category "Display"
+    :priority 45
+    :predicate (lambda () (fboundp 'global-text-scale-adjust))
+    :action (lambda ()
+              (call-interactively #'global-text-scale-adjust)))
+   
+   (init-dwim-make-action
     :title "List all keybindings"
     :description "Open a buffer showing all active key bindings"
     :category "Emacs"
@@ -6596,6 +6630,39 @@ is retained for compatibility but returns nil."
       :action (lambda () (isearch-toggle-regexp))))))
 
 ;;; ── Ediff session (NEW) ───────────────────────────────────────────────────
+
+(defun init-dwim-launch-ediff-provider ()
+  "Return actions for starting fresh Ediff sessions."
+  (list
+   (init-dwim-make-action
+    :title "Ediff two buffers"
+    :description "Start an Ediff session comparing two open buffers"
+    :category "Ediff"
+    :priority 75
+    :action (lambda () (call-interactively #'ediff-buffers)))
+
+   (init-dwim-make-action
+    :title "Ediff two files"
+    :description "Start an Ediff session comparing two files on disk"
+    :category "Ediff"
+    :priority 73
+    :action (lambda () (call-interactively #'ediff-files)))
+
+   (init-dwim-make-action
+    :title "Ediff regions word-wise"
+    :description "Compare two regions from two buffers at the word level"
+    :category "Ediff"
+    :priority 68
+    :predicate (lambda () (fboundp 'ediff-regions-wordwise))
+    :action (lambda () (call-interactively #'ediff-regions-wordwise)))
+
+   (init-dwim-make-action
+    :title "Ediff buffer with its file"
+    :description "Compare the current buffer against the saved file version"
+    :category "Ediff"
+    :priority 70
+    :predicate #'init-dwim--buffer-file-p
+    :action (lambda () (ediff-current-file)))))
 
 (defun init-dwim-ediff-provider ()
   "Return actions for an active Ediff session."
@@ -11465,6 +11532,17 @@ is retained for compatibility but returns nil."
                   (message "No active hi-lock patterns"))))
      
      (init-dwim-make-action
+      :title "Toggle highlight changes"
+      :description "Visually mark recent edits using highlight-changes-mode"
+      :category "Display"
+      :priority 50
+      :predicate (lambda () (fboundp 'highlight-changes-mode))
+      :action (lambda ()
+                (highlight-changes-mode 'toggle)
+                (message "Highlight changes: %s"
+                         (if (bound-and-true-p highlight-changes-mode) "on" "off"))))
+
+     (init-dwim-make-action
       :title "Previous highlighted occurrence"
       :description "Jump to the previous occurrence of the highlighted symbol"
       :category "Highlight"
@@ -12043,6 +12121,36 @@ is retained for compatibility but returns nil."
       ;; Return the collected actions
       (nreverse actions))))
 
+(defun init-dwim-editing-builtins-provider ()
+  "Return editing actions backed purely by built-in Emacs commands."
+  (list
+   ;; ── sort-columns / sort-regexp-fields ──
+   (init-dwim-make-action
+    :title "Sort region by column"
+    :description "Sort lines in the region by the content of a column range"
+    :category "Edit"
+    :priority 56
+    :predicate #'use-region-p
+    :action (lambda ()
+              (call-interactively #'sort-columns)))
+
+   (init-dwim-make-action
+    :title "Sort by regexp field"
+    :description "Sort lines using a regexp to identify the sort key"
+    :category "Edit"
+    :priority 54
+    :action (lambda ()
+              (call-interactively #'sort-regexp-fields)))
+
+   ;; ── compare-windows ──
+   (init-dwim-make-action
+    :title "Compare windows"
+    :description "Scroll both windows until their text diverges (compare-windows)"
+    :category "Edit"
+    :priority 50
+    :predicate (lambda () (> (count-windows) 1))
+    :action (lambda () (compare-windows nil)))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -12068,6 +12176,7 @@ is retained for compatibility but returns nil."
         init-dwim-narrow-provider
         init-dwim-smartparens-provider
         init-dwim-highlight-provider
+        init-dwim-editing-builtins-provider
 
         ;; Notes, text, Org, Markdown, snippets, and templates.
         init-dwim-quick-note-provider
@@ -12091,6 +12200,7 @@ is retained for compatibility but returns nil."
         init-dwim-window-provider
         init-dwim-tab-bar-provider
         init-dwim-dired-provider
+        init-dwim-find-dired-provider
         init-dwim-focus-provider
         init-dwim-security-provider
         init-dwim-tramp-provider
@@ -12111,6 +12221,7 @@ is retained for compatibility but returns nil."
         init-dwim-smerge-provider
         init-dwim-diff-provider
         init-dwim-ediff-provider
+        init-dwim-launch-ediff-provider
         init-dwim-wgrep-provider
 
         ;; Programming, diagnostics, languages, and structured data.
