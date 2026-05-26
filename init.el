@@ -2298,6 +2298,14 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                     (diff-buffers clip-buf (current-buffer)))))
        
        (init-dwim-make-action
+        :title "Auto-insert template"
+        :description "Insert the configured file template for this buffer's mode or filename"
+        :category "File"
+        :priority 55
+        :predicate (lambda () (fboundp 'auto-insert))
+        :action (lambda () (auto-insert)))
+       
+       (init-dwim-make-action
         :title "Toggle auto-save"
         :description "Enable or disable auto-save for this buffer"
         :category "File"
@@ -6022,6 +6030,50 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :predicate (lambda () (fboundp 'global-text-scale-adjust))
     :action (lambda ()
               (call-interactively #'global-text-scale-adjust)))
+   
+   ;; time-stamp
+   (init-dwim-make-action
+    :title "Update time-stamp"
+    :description "Update the Time-stamp: <> header in the current file"
+    :category "Emacs"
+    :priority 32
+    :predicate (lambda ()
+                 (and (init-dwim--buffer-file-p)
+                      (fboundp 'time-stamp)
+                      (save-excursion
+                        (goto-char (point-min))
+                        (re-search-forward "Time-stamp:" (+ (point-min) 8000) t))))
+    :action (lambda () (time-stamp)))
+
+   ;; copyright-update
+   (init-dwim-make-action
+    :title "Update copyright year"
+    :description "Update the year in the file's copyright notice"
+    :category "Emacs"
+    :priority 30
+    :predicate (lambda ()
+                 (and (init-dwim--buffer-file-p)
+                      (fboundp 'copyright-update)
+                      (save-excursion
+                        (goto-char (point-min))
+                        (re-search-forward "[Cc]opyright" (+ (point-min) 8000) t))))
+    :action (lambda () (copyright-update)))
+
+   ;; set-input-method
+   (init-dwim-make-action
+    :title "Set input method"
+    :description "Choose a multilingual input method for this buffer"
+    :category "Emacs"
+    :priority 28
+    :action (lambda () (call-interactively #'set-input-method)))
+
+   (init-dwim-make-action
+    :title "Toggle input method"
+    :description "Enable or disable the current input method"
+    :category "Emacs"
+    :priority 27
+    :predicate (lambda () current-input-method)
+    :action (lambda () (toggle-input-method)))
    
    (init-dwim-make-action
     :title "List all keybindings"
@@ -12151,6 +12203,195 @@ is retained for compatibility but returns nil."
     :predicate (lambda () (> (count-windows) 1))
     :action (lambda () (compare-windows nil)))))
 
+(defun init-dwim-whitespace-edit-provider ()
+  "Return whitespace normalization actions backed by built-in Emacs commands."
+  (list
+   (init-dwim-make-action
+    :title "Tabify region or buffer"
+    :description "Convert runs of spaces to tabs where possible"
+    :category "Edit"
+    :priority 58
+    :action (lambda ()
+              (if (use-region-p)
+                  (tabify (region-beginning) (region-end))
+                (tabify (point-min) (point-max)))
+              (message "Tabified")))
+
+   (init-dwim-make-action
+    :title "Untabify region or buffer"
+    :description "Convert all tabs to the equivalent number of spaces"
+    :category "Edit"
+    :priority 57
+    :action (lambda ()
+              (if (use-region-p)
+                  (untabify (region-beginning) (region-end))
+                (untabify (point-min) (point-max)))
+              (message "Untabified")))
+
+   (init-dwim-make-action
+    :title "Just one space"
+    :description "Collapse all whitespace around point to a single space"
+    :category "Edit"
+    :priority 55
+    :action (lambda () (just-one-space)))
+
+   (init-dwim-make-action
+    :title "Delete horizontal whitespace"
+    :description "Delete all spaces and tabs around point on the current line"
+    :category "Edit"
+    :priority 53
+    :action (lambda () (delete-horizontal-space)))
+
+   (init-dwim-make-action
+    :title "Delete blank lines"
+    :description "Remove blank lines around point (C-x C-o)"
+    :category "Edit"
+    :priority 52
+    :action (lambda () (delete-blank-lines)))
+
+   (init-dwim-make-action
+    :title "Fix whitespace around point"
+    :description "Normalize whitespace before point (fixup-whitespace)"
+    :category "Edit"
+    :priority 48
+    :action (lambda () (fixup-whitespace)))
+
+   (init-dwim-make-action
+    :title "Open line below"
+    :description "Insert a blank line below point without moving point (open-line)"
+    :category "Edit"
+    :priority 50
+    :action (lambda () (open-line 1)))))
+
+(defun init-dwim-motion-edit-provider ()
+  "Return structural editing and motion actions backed by built-in Emacs commands."
+  (list
+
+   ;; ── Transpose ──────────────────────────────────────────────────────────
+   (init-dwim-make-action
+    :title "Transpose words"
+    :description "Swap the word before point with the word after point"
+    :category "Edit"
+    :priority 65
+    :action (lambda () (transpose-words 1)))
+
+   (init-dwim-make-action
+    :title "Transpose lines"
+    :description "Swap the current line with the line above"
+    :category "Edit"
+    :priority 63
+    :action (lambda () (transpose-lines 1)))
+
+   (init-dwim-make-action
+    :title "Transpose sexps"
+    :description "Swap the balanced expressions before and after point"
+    :category "Edit"
+    :priority 60
+    :predicate (lambda () (derived-mode-p 'prog-mode 'emacs-lisp-mode))
+    :action (lambda () (transpose-sexps 1)))
+
+   ;; ── Structural mark ───────────────────────────────────────────────────
+   (init-dwim-make-action
+    :title "Mark whole buffer"
+    :description "Select the entire buffer contents (C-x h)"
+    :category "Edit"
+    :priority 72
+    :action (lambda () (mark-whole-buffer)))
+
+   (init-dwim-make-action
+    :title "Mark paragraph"
+    :description "Select the paragraph at point"
+    :category "Edit"
+    :priority 68
+    :action (lambda () (mark-paragraph)))
+
+   (init-dwim-make-action
+    :title "Mark page"
+    :description "Select the current page (bounded by ^L characters)"
+    :category "Edit"
+    :priority 60
+    :action (lambda () (mark-page)))
+
+   (init-dwim-make-action
+    :title "Mark sexp"
+    :description "Select the balanced expression after point"
+    :category "Edit"
+    :priority 65
+    :predicate (lambda () (derived-mode-p 'prog-mode 'emacs-lisp-mode))
+    :action (lambda () (mark-sexp)))
+
+   ;; ── Word-level case ───────────────────────────────────────────────────
+   (init-dwim-make-action
+    :title "Upcase word"
+    :description "Uppercase the word at or after point"
+    :category "Edit"
+    :priority 62
+    :predicate (lambda () (not (use-region-p)))
+    :action (lambda () (upcase-word 1)))
+
+   (init-dwim-make-action
+    :title "Downcase word"
+    :description "Lowercase the word at or after point"
+    :category "Edit"
+    :priority 61
+    :predicate (lambda () (not (use-region-p)))
+    :action (lambda () (downcase-word 1)))
+
+   (init-dwim-make-action
+    :title "Capitalize word"
+    :description "Capitalize the first letter of the word at or after point"
+    :category "Edit"
+    :priority 60
+    :predicate (lambda () (not (use-region-p)))
+    :action (lambda () (capitalize-word 1)))
+
+   ;; ── Fill ──────────────────────────────────────────────────────────────
+   (init-dwim-make-action
+    :title "Fill individual paragraphs"
+    :description "Fill each paragraph in the region independently"
+    :category "Edit"
+    :priority 62
+    :predicate #'use-region-p
+    :predicate (lambda () (fboundp 'fill-individual-paragraphs))
+    :action (lambda ()
+              (fill-individual-paragraphs (region-beginning) (region-end))))
+
+   ;; ── Search / grep ─────────────────────────────────────────────────────
+   (init-dwim-make-action
+    :title "Multi-occur in open buffers"
+    :description "Search for a pattern across all open buffers with occur"
+    :category "Search"
+    :priority 72
+    :action (lambda ()
+              (let ((re (read-regexp "Multi-occur pattern: "
+                                     (init-dwim--symbol-string))))
+                (multi-occur-in-matching-buffers "." re))))
+
+   (init-dwim-make-action
+    :title "lgrep (grep in directory)"
+    :description "Run grep recursively and show results in a navigable buffer"
+    :category "Search"
+    :priority 68
+    :predicate (lambda () (fboundp 'lgrep))
+    :action (lambda () (call-interactively #'lgrep)))
+
+   (init-dwim-make-action
+    :title "rgrep (recursive grep)"
+    :description "Recursive grep with file-type filtering in a navigable buffer"
+    :category "Search"
+    :priority 66
+    :predicate (lambda () (fboundp 'rgrep))
+    :action (lambda () (call-interactively #'rgrep)))
+
+   ;; ── Regexp builder ────────────────────────────────────────────────────
+   (init-dwim-make-action
+    :title "Build regexp interactively (re-builder)"
+    :description "Open re-builder to construct and test a regexp against the buffer"
+    :category "Search"
+    :priority 60
+    :predicate (lambda () (fboundp 're-builder))
+    :action (lambda () (re-builder)))))
+
 ;;;; Provider registration
 
 (setq init-dwim-providers
@@ -12177,6 +12418,8 @@ is retained for compatibility but returns nil."
         init-dwim-smartparens-provider
         init-dwim-highlight-provider
         init-dwim-editing-builtins-provider
+        init-dwim-whitespace-edit-provider
+        init-dwim-motion-edit-provider
 
         ;; Notes, text, Org, Markdown, snippets, and templates.
         init-dwim-quick-note-provider
