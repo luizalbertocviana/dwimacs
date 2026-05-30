@@ -3123,8 +3123,23 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
                              (if (use-region-p) "Region" "Buffer") count))))
        
        (init-dwim-make-action
+        :title "Flush lines matching regexp"
+        :description "Delete all lines in the buffer (or region) matching a regexp"
+        :category "Text"
+        :priority 72
+        :action (lambda () (call-interactively #'flush-lines)))
+       
+       (init-dwim-make-action
+        :title "Center region"
+        :description "Center each line in the region within fill-column"
+        :category "Text"
+        :priority 48
+        :predicate #'use-region-p
+        :action (lambda () (center-region (region-beginning) (region-end))))
+       
+       (init-dwim-make-action
         :title "Generate Org TOC"
-        :description "enerate or update the Org table of contents"
+        :description "generate or update the Org table of contents"
         :category "Text"
         :priority 55
         :predicate (lambda ()
@@ -4264,6 +4279,47 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
     :priority 85
     :action (lambda () (call-interactively #'isearch-forward)))
 
+   (init-dwim-make-action
+    :title "Recover file"
+    :description "Recover an auto-saved version of the current file"
+    :category "Buffer"
+    :priority 55
+    :predicate (lambda () (and (buffer-file-name)
+                               (fboundp 'recover-file)))
+    :action (lambda () (recover-file (buffer-file-name))))
+   
+   (init-dwim-make-action
+    :title "Recover session"
+    :description "Restore buffers from a previous Emacs auto-save session"
+    :category "Buffer"
+    :priority 50
+    :predicate (lambda () (fboundp 'recover-session))
+    :action (lambda () (recover-session)))
+
+   (init-dwim-make-action
+    :title "Append region to file"
+    :description "Append the selected region to a file on disk"
+    :category "Buffer"
+    :priority 50
+    :predicate #'use-region-p
+    :action (lambda ()
+              (append-to-file (region-beginning) (region-end)
+                              (read-file-name "Append region to file: "))))
+   
+   (init-dwim-make-action
+    :title "View mode (read-only pager)"
+    :description "Enter view-mode for read-only paging with q to quit"
+    :category "Buffer"
+    :priority 45
+    :action (lambda () (view-mode 'toggle)))
+   
+   (init-dwim-make-action
+    :title "Hexl mode"
+    :description "View/edit the buffer as hex with hexl-mode"
+    :category "Buffer"
+    :priority 43
+    :action (lambda () (hexl-mode)))
+   
    (init-dwim-make-action
     :title "Toggle fill-column indicator"
     :description "Show or hide the fill-column ruler line"
