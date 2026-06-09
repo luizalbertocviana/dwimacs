@@ -791,11 +791,20 @@ raw input string if it did not.  The latter case is handled by the caller."
 
 The command checks active region, URL at point, file path at point, symbol at
 point, Org headings, programming buffers, text/Markdown buffers, Dired, Magit,
-and project context.  Optional packages are integrated only when available."
+and project context.  Optional packages are integrated only when available.
+
+If the user's input matches no action, it is passed to `compile' directly,
+treating it as a shell command."
   (interactive)
-  (init-dwim-execute-action
-   (init-dwim-read-action
-    (init-dwim-collect-actions))))
+  (let ((result (init-dwim-read-action
+                 (init-dwim-collect-actions))))
+    (cond
+     ((init-dwim-action-valid-p result)
+      (init-dwim-execute-action result))
+     ((and (stringp result) (not (string-empty-p (string-trim result))))
+      (compile result))
+     (t
+      nil))))
 
 ;;;###autoload
 (defun init-dwim-explain ()
