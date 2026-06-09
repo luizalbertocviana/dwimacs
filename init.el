@@ -716,7 +716,10 @@ category and title for stable, predictable display."
           (init-dwim-action-title action)))
 
 (defun init-dwim-read-action (actions)
-  "Read one action from ACTIONS using the configured completion backend."
+  "Read one action from ACTIONS using the configured completion backend.
+
+Returns the selected action plist if the input matched a candidate, or the
+raw input string if it did not.  The latter case is handled by the caller."
   (unless actions
     (user-error "No relevant init-dwim actions found"))
   (let* ((table (cl-loop for action in actions
@@ -745,35 +748,34 @@ category and title for stable, predictable display."
                            (concat padding "— " desc)
                            'face 'completions-annotations))
                       "")))))))
-    (cond
-     ((and (eq init-dwim-completion-backend 'consult-if-available)
-           (fboundp 'consult--read))
-      (cdr (assoc
-            (funcall 'consult--read
-                     (lambda (str pred action)
-                       (if (eq action 'metadata)
-                           metadata
-                         (complete-with-action
-                          action
-                          (mapcar #'car table)
-                          str pred)))
-                     :prompt "Do what? "
-                     :require-match t
-                     :sort nil)
-            table)))
-     (t
-      (cdr (assoc
-            (completing-read
-             "Do what? "
-             (lambda (str pred action)
-               (if (eq action 'metadata)
-                   metadata
-                 (complete-with-action
-                  action
-                  (mapcar #'car table)
-                  str pred)))
-             nil t)
-            table))))))
+    (let ((result
+           (cond
+            ((and (eq init-dwim-completion-backend 'consult-if-available)
+                  (fboundp 'consult--read))
+             (funcall 'consult--read
+                      (lambda (str pred action)
+                        (if (eq action 'metadata)
+                            metadata
+                          (complete-with-action
+                           action
+                           (mapcar #'car table)
+                           str pred)))
+                      :prompt "Do what? "
+                      :require-match nil
+                      :sort nil))
+            (t
+             (completing-read
+              "Do what? "
+              (lambda (str pred action)
+                (if (eq action 'metadata)
+                    metadata
+                  (complete-with-action
+                   action
+                   (mapcar #'car table)
+                   str pred)))
+              nil nil)))))
+      (or (cdr (assoc result table))
+          result))))
 
 (defun init-dwim-execute-action (action)
   "Execute ACTION."
