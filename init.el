@@ -789,42 +789,62 @@ raw input string if it did not.  The latter case is handled by the caller."
   "Prompt the user for what to do with the raw string INPUT.
 
 Called when the user confirms text in the DWIM picker that matched no action.
-Presents a fixed set of options and dispatches accordingly."
+Presents context-sensitive options based on what INPUT appears to be."
   (when (and input (not (string-empty-p (string-trim input))))
-    (let* ((options
+    (let* ((trimmed    (string-trim input))
+           (expanded   (expand-file-name trimmed))
+           (is-file    (file-exists-p expanded))
+           (is-url     (url-type (url-generic-parse-url trimmed)))
+           (is-symbol  (intern-soft trimmed))
+           (is-word    (not (string-match-p "[[:space:]]" trimmed)))
+           (ai-only    (not (or is-file is-url is-symbol)))
+           (options
             (delq nil
                   (list
-                   "Run as shell command (compile)"
-                   "Run as async shell command"
-                   "Find file"
-                   "Browse URL"
-                   "Eval as Elisp"
-                   (when (init-dwim--gptel-available-p)
-                     "Ask AI"))))
-           (choice
-            (completing-read
-             (format "Do what with \"%s\"? " input)
-             options nil t)))
-      (cond
-       ((equal choice "Run as shell command (compile)")
-        (compile input))
-       ((equal choice "Run as async shell command")
-        (async-shell-command input))
-       ((equal choice "Find file")
-        (find-file input))
-       ((equal choice "Browse URL")
-        (browse-url input))
-       ((equal choice "Eval as Elisp")
-        (eval (read input)))
-       ((equal choice "Ask AI")
-        (let ((context (or (init-dwim--gptel-region-text)
-                           (init-dwim--gptel-defun-text)
-                           (init-dwim--gptel-context-around-point))))
-          (init-dwim--gptel-request-to-buffer
-           init-dwim-ai-system-prompt
-           (if context
-               (format "%s\n\nContext:\n%s" input context)
-             input))))))))
+                   (when is-url
+                     (cons "Browse URL"
+                           (let ((u trimmed))
+                             (lambda () (browse-url u)))))
+                   (when is-file
+                     (cons "Find file"
+                           (let ((f expanded))
+                             (lambda () (find-file f)))))
+                   (when (or is-symbol is-word)
+                     (cons "Look up (symbol / man / info)"
+                           (let ((sym is-symbol)
+                                 (word trimmed))
+                             (lambda ()
+                               (cond
+                                (sym (describe-symbol sym))
+                                ((executable-find word) (man word))
+                                (t (info word)))))))
+                   (cons "Copy to kill ring"
+                         (let ((s trimmed))
+                           (lambda ()
+                             (kill-new s)
+                             (message "Copied: %s" s))))
+                   (cons "Run as shell command"
+                         (let ((cmd trimmed))
+                           (lambda () (compile cmd))))
+                   (when (and (init-dwim--gptel-available-p) ai-only)
+                     (cons "Ask AI"
+                           (let ((cmd trimmed))
+                             (lambda ()
+                               (let* ((context (or (init-dwim--gptel-region-text)
+                                                   (init-dwim--gptel-defun-text)
+                                                   (init-dwim--gptel-context-around-point)))
+                                      (mode-hint (format "[Buffer: %s, Mode: %s]\n"
+                                                         (buffer-name) major-mode))
+                                      (prompt (concat mode-hint cmd
+                                                      (when context
+                                                        (format "\n\nContext:\n%s" context)))))
+                                 (init-dwim--gptel-request-to-buffer
+                                  init-dwim-ai-system-prompt prompt)))))))))
+           (choice (completing-read
+                    (format "Do what with \"%s\"? " trimmed)
+                    (mapcar #'car options) nil t)))
+      (when-let ((fn (cdr (assoc choice options))))
+        (funcall fn)))))
 
 ;;;###autoload
 (defun init-dwim ()
