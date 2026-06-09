@@ -785,6 +785,47 @@ raw input string if it did not.  The latter case is handled by the caller."
     (init-dwim--log "Executing action: %s" (init-dwim-action-title action))
     (funcall fn)))
 
+(defun init-dwim-with-string (input)
+  "Prompt the user for what to do with the raw string INPUT.
+
+Called when the user confirms text in the DWIM picker that matched no action.
+Presents a fixed set of options and dispatches accordingly."
+  (when (and input (not (string-empty-p (string-trim input))))
+    (let* ((options
+            (delq nil
+                  (list
+                   "Run as shell command (compile)"
+                   "Run as async shell command"
+                   "Find file"
+                   "Browse URL"
+                   "Eval as Elisp"
+                   (when (init-dwim--gptel-available-p)
+                     "Ask AI"))))
+           (choice
+            (completing-read
+             (format "Do what with \"%s\"? " input)
+             options nil t)))
+      (cond
+       ((equal choice "Run as shell command (compile)")
+        (compile input))
+       ((equal choice "Run as async shell command")
+        (async-shell-command input))
+       ((equal choice "Find file")
+        (find-file input))
+       ((equal choice "Browse URL")
+        (browse-url input))
+       ((equal choice "Eval as Elisp")
+        (eval (read input)))
+       ((equal choice "Ask AI")
+        (let ((context (or (init-dwim--gptel-region-text)
+                           (init-dwim--gptel-defun-text)
+                           (init-dwim--gptel-context-around-point))))
+          (init-dwim--gptel-request-to-buffer
+           init-dwim-ai-system-prompt
+           (if context
+               (format "%s\n\nContext:\n%s" input context)
+             input))))))))
+
 ;;;###autoload
 (defun init-dwim ()
   "Inspect the current context and offer relevant actions.
@@ -802,7 +843,7 @@ treating it as a shell command."
      ((init-dwim-action-valid-p result)
       (init-dwim-execute-action result))
      ((and (stringp result) (not (string-empty-p (string-trim result))))
-      (compile result))
+      (init-dwim-with-string result))
      (t
       nil))))
 
