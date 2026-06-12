@@ -3813,6 +3813,14 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
          :action (lambda () (call-interactively #'magit-submodule)))
 
         (init-dwim-make-action
+         :title "Magit reverse"
+         :description "Reverse the change at point in the working tree"
+         :category "Magit"
+         :priority 56
+         :predicate (lambda () (fboundp 'magit-reverse))
+         :action (lambda () (call-interactively #'magit-reverse)))
+
+        (init-dwim-make-action
          :title "Magit bisect"
          :description "Binary search for the commit that introduced a bug"
          :category "Magit"
