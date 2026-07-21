@@ -329,6 +329,7 @@
   (dired-dwim-target t)
   (dired-recursive-copies 'always)
   (dired-recursive-deletes 'top)
+  (dired-listing-switches "-al --group-directories-first")
   :config
   (evil-set-initial-state 'dired-mode 'emacs)
   (define-key dired-mode-map [remap evil-backward-char] 'dired-up-directory)
