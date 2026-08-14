@@ -351,6 +351,8 @@
 (use-package eat
   :defer t
   :init
+  (setq eshell-visual-commands nil)
+  (setq eat-term-name "xterm")
   (add-hook 'eshell-load-hook #'eat-eshell-mode))
 
 ;;;; AI provider backends
