@@ -474,6 +474,8 @@
 (require 'thingatpt)
 (require 'url-util nil t)
 (require 'project nil t)
+(require 'json)
+(require 'color)
 
 (defgroup init-dwim nil
   "Context-aware Do What I Mean command."
@@ -538,6 +540,22 @@ If nil, no project notes action is offered."
   (expand-file-name "inbox.org" org-directory)
   "Org file used by extra DWIM quick note actions."
   :type 'file
+  :group 'init-dwim)
+
+(defcustom init-dwim-issue-tracker-url-format nil
+  "Format string (one %s) for tracker keys such as PROJ-123, or nil."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'init-dwim)
+
+(defcustom init-dwim-web-search-url "https://duckduckgo.com/?q=%s"
+  "Format string (one %s) used to search the web for diagnostics."
+  :type 'string
+  :group 'init-dwim)
+
+(defcustom init-dwim-conventional-commit-types
+  '("feat" "fix" "docs" "style" "refactor" "perf" "test" "build" "ci" "chore" "revert")
+  "Types offered by the commit-message provider."
+  :type '(repeat string)
   :group 'init-dwim)
 
 (defvar init-dwim-debug-mode nil
@@ -954,10 +972,10 @@ The result buffer RESULT-BUF-NAME (default \"*gptel-result*\") is shown."
       (unless (bolp) (insert "\n")))
     (pop-to-buffer rbuf)
     (gptel-request prompt
-      :system system-prompt
-      :buffer rbuf
-      :position (with-current-buffer rbuf (point-max-marker))
-      :stream t)))
+                   :system system-prompt
+                   :buffer rbuf
+                   :position (with-current-buffer rbuf (point-max-marker))
+                   :stream t)))
 
 (defun init-dwim--gptel-region-text ()
   "Return the active region as a string, or nil."
@@ -1085,16 +1103,18 @@ The result buffer RESULT-BUF-NAME (default \"*gptel-result*\") is shown."
     (when-let ((scripts (alist-get 'scripts json)))
       (mapcar (lambda (cell) (symbol-name (car cell))) scripts))))
 
-(defun init-dwim-extra--npm-run-action (script &optional priority)
-  "Create an action that runs npm SCRIPT."
-  (init-dwim-make-action
-   :title (format "npm run %s" script)
-   :description (format "Run package.json script: %s" script)
-   :category "Project"
-   :priority (or priority 74)
-   :action (lambda ()
-             (init-dwim--run-in-project
-              (format "npm run %s" script)))))
+(defun init-dwim-extra--package-script-action (script &optional priority)
+  "Create an action that runs package.json SCRIPT with the project's package manager."
+  (let* ((manager (init-dwim-extra--js-package-manager))
+         (command (format "%s run %s" manager (shell-quote-argument script))))
+    (init-dwim-make-action
+     :title (format "%s run %s" manager script)
+     :description (format "Run package.json script: %s" script)
+     :category "Project"
+     :priority (or priority 74)
+     :predicate (lambda () (executable-find manager))
+     :action (lambda ()
+               (init-dwim--run-in-project command)))))
 
 (defun init-dwim-extra--project-file (file)
   "Return absolute path to FILE in the current project."
@@ -1557,6 +1577,445 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
   (and (fboundp 'file-remote-p)
        (file-remote-p default-directory)))
 
+(defun init-dwim--match-at-point (regexp)
+  "Return (BEG END TEXT) of a REGEXP match on this line that contains point."
+  (save-excursion
+    (let ((pt (point)) (eol (line-end-position)) result)
+      (beginning-of-line)
+      (while (and (not result) (re-search-forward regexp eol t))
+        (when (and (<= (match-beginning 0) pt) (<= pt (match-end 0)))
+          (setq result (list (match-beginning 0) (match-end 0)
+                             (match-string-no-properties 0)))))
+      result)))
+
+(defun init-dwim--replace-span (beg end text)
+  "Replace BEG..END with TEXT."
+  (goto-char beg)
+  (delete-region beg end)
+  (insert text))
+
+(defun init-dwim--local-project-root ()
+  "Return the project root for local buffers, nil for remote ones."
+  (and (not (file-remote-p default-directory))
+       (init-dwim--project-root)))
+
+(defun init-dwim--git-output (&rest args)
+  "Run git with ARGS in the project root; return trimmed stdout or nil."
+  (when-let ((dir (init-dwim--local-project-root)))
+    (let ((default-directory dir))
+      (ignore-errors
+        (with-temp-buffer
+          (when (zerop (apply #'process-file "git" nil (list t nil) nil args))
+            (let ((s (string-trim (buffer-string))))
+              (unless (string-empty-p s) s))))))))
+
+(defun init-dwim--git-branch ()
+  "Return current branch name, \"HEAD\" if detached, or nil."
+  (init-dwim--git-output "rev-parse" "--abbrev-ref" "HEAD"))
+
+;;; Remote / forge info (cached for 60 s per project)
+
+(defvar init-dwim--git-remote-cache (make-hash-table :test 'equal))
+
+(defun init-dwim--git-parse-remote-url (url)
+  "Parse git remote URL into a plist (:host :path :base :kind), or nil."
+  (when (string-match
+         "\\`\\(?:[a-zA-Z+]+://\\)?\\(?:[^@/]+@\\)?\\([^:/]+\\)\\(?::[0-9]+\\)?[:/]\\(.+?\\)\\(?:\\.git\\)?/?\\'"
+         url)
+    (let ((host (match-string 1 url))
+          (path (match-string 2 url)))
+      (list :host host :path path
+            :base (format "https://%s/%s" host path)
+            :kind (cond ((string-match-p "gitlab" host) 'gitlab)
+                        ((string-match-p "bitbucket" host) 'bitbucket)
+                        (t 'github))))))
+
+(defun init-dwim--git-remote-info ()
+  "Return parsed info for the `origin' remote of the current project."
+  (when-let ((dir (init-dwim--local-project-root)))
+    (let ((hit (gethash dir init-dwim--git-remote-cache)))
+      (if (and hit (< (- (float-time) (car hit)) 60))
+          (cdr hit)
+        (let* ((url (init-dwim--git-output "remote" "get-url" "origin"))
+               (info (and url (init-dwim--git-parse-remote-url url))))
+          (puthash dir (cons (float-time) info) init-dwim--git-remote-cache)
+          info)))))
+
+(defun init-dwim--line-range ()
+  "Return (START . END) line numbers for the region or the current line."
+  (if (use-region-p)
+      (let* ((beg (region-beginning))
+             (end (save-excursion
+                    (goto-char (region-end))
+                    (if (and (bolp) (> (point) beg)) (1- (point)) (point)))))
+        (cons (line-number-at-pos beg) (line-number-at-pos end)))
+    (let ((l (line-number-at-pos))) (cons l l))))
+
+(defun init-dwim--git-relative-path ()
+  "Return the visited file's path relative to the git top level, or nil."
+  (when-let* ((file (buffer-file-name))
+              ((not (file-remote-p file)))
+              (top (init-dwim--git-output "rev-parse" "--show-toplevel")))
+    (let ((rel (file-relative-name (file-truename file) (file-truename top))))
+      (unless (string-prefix-p ".." rel) rel))))
+
+(defun init-dwim--forge-file-url (info rev relpath range)
+  "Build a forge URL for RELPATH at REV with line RANGE (START . END)."
+  (let* ((base (plist-get info :base))
+         (kind (plist-get info :kind))
+         (path (mapconcat #'url-hexify-string (split-string relpath "/") "/"))
+         (s (car range)) (e (cdr range))
+         (frag (pcase kind
+                 ('gitlab    (if (= s e) (format "#L%d" s) (format "#L%d-%d" s e)))
+                 ('bitbucket (if (= s e) (format "#lines-%d" s) (format "#lines-%d:%d" s e)))
+                 (_          (if (= s e) (format "#L%d" s) (format "#L%d-L%d" s e))))))
+    (pcase kind
+      ('gitlab    (format "%s/-/blob/%s/%s%s" base rev path frag))
+      ('bitbucket (format "%s/src/%s/%s%s" base rev path frag))
+      (_          (format "%s/blob/%s/%s%s" base rev path frag)))))
+
+(defun init-dwim--forge-commit-url (info sha)
+  "Return the forge URL of commit SHA."
+  (let ((base (plist-get info :base)))
+    (pcase (plist-get info :kind)
+      ('gitlab    (format "%s/-/commit/%s" base sha))
+      ('bitbucket (format "%s/commits/%s" base sha))
+      (_          (format "%s/commit/%s" base sha)))))
+
+(defun init-dwim--forge-issue-url (info number)
+  "Return the forge URL of issue NUMBER."
+  (let ((base (plist-get info :base)))
+    (pcase (plist-get info :kind)
+      ('gitlab (format "%s/-/issues/%s" base number))
+      (_       (format "%s/issues/%s" base number)))))
+
+(defun init-dwim--forge-pr-url (info branch)
+  "Return the URL that opens a PR/MR for BRANCH."
+  (let ((base (plist-get info :base))
+        (br (url-hexify-string branch)))
+    (pcase (plist-get info :kind)
+      ('gitlab    (format "%s/-/merge_requests/new?merge_request[source_branch]=%s" base br))
+      ('bitbucket (format "%s/pull-requests/new?source=%s" base br))
+      (_          (format "%s/pull/new/%s" base branch)))))
+
+(defun init-dwim--org-heading-has-cookie-p ()
+  "Return non-nil when the current subtree heading has a [/] or [%] cookie."
+  (save-excursion
+    (org-back-to-heading t)
+    (string-match-p "\\[[0-9]*\\(?:/[0-9]*\\|%\\)\\]"
+                    (buffer-substring-no-properties
+                     (line-beginning-position) (line-end-position)))))
+
+(defun init-dwim--org-add-cookie ()
+  "Add a [/] progress cookie to the current heading."
+  (save-excursion
+    (org-back-to-heading t)
+    (when (re-search-forward "\\(?:[ \t]+:[[:alnum:]_@#%:]+:\\)?[ \t]*$"
+                             (line-end-position) t)
+      (goto-char (match-beginning 0))
+      (insert " [/]")))
+  (org-update-statistics-cookies 'all))
+
+(defun init-dwim--org-remove-cookie ()
+  "Remove the progress cookie from the current heading."
+  (save-excursion
+    (org-back-to-heading t)
+    (when (re-search-forward "[ \t]*\\[[0-9]*\\(?:/[0-9]*\\|%\\)\\]"
+                             (line-end-position) t)
+      (replace-match ""))))
+
+(defun init-dwim--diagnostic-code (diag)
+  "Return the LSP diagnostic code of DIAG as a string, or nil."
+  (ignore-errors
+    (let* ((data (flymake-diagnostic-data diag))
+           (lsp  (and (listp data) (alist-get 'eglot-lsp-diag data)))
+           (code (and lsp (plist-get lsp :code))))
+      (and code (format "%s" code)))))
+
+(defun init-dwim--diagnostic-suppression (code)
+  "Return (WHERE . TEXT) to suppress a diagnostic with CODE, or nil.
+WHERE is `eol' (append to line) or `above' (new line above)."
+  (cond
+   ((init-dwim--python-mode-p)
+    (cons 'eol
+          (cond ((and code (string-match-p "\\`[A-Z]+[0-9]+\\'" code))
+                 (format "# noqa: %s" code))
+                ((and code (string-match-p "\\`[a-z][a-z-]+\\'" code))
+                 (format "# type: ignore[%s]" code))
+                (t "# type: ignore"))))
+   ((or (init-dwim--typescript-mode-p) (init-dwim--javascript-mode-p))
+    (cons 'above
+          (cond ((and code (string-match-p "\\`[0-9]+\\'" code)) "// @ts-expect-error")
+                (code (format "// eslint-disable-next-line %s" code))
+                (t "// eslint-disable-next-line"))))
+   ((init-dwim--go-mode-p)
+    (cons 'eol (if code (format "//nolint:%s" code) "//nolint")))
+   ((init-dwim--ruby-mode-p)
+    (when (and code (string-match-p "/" code))
+      (cons 'eol (format "# rubocop:disable %s" code))))
+   ((init-dwim--sh-mode-p)
+    (when code
+      (cons 'above
+            (format "# shellcheck disable=%s"
+                    (if (string-match-p "\\`[0-9]+\\'" code) (concat "SC" code) code)))))))
+
+(defun init-dwim--insert-suppression (spec)
+  "Insert the suppression comment described by SPEC on the current line."
+  (save-excursion
+    (pcase (car spec)
+      ('eol (end-of-line)
+            (insert (if (bolp) "" "  ") (cdr spec)))
+      ('above (beginning-of-line)
+              (let ((indent (buffer-substring
+                             (point)
+                             (save-excursion (back-to-indentation) (point)))))
+                (insert indent (cdr spec) "\n"))))))
+
+(defun init-dwim--commit-sha-at-point ()
+  "Return a hex token at point that looks like a commit SHA, or nil."
+  (when-let* ((m (init-dwim--match-at-point "\\b[0-9a-f]\\{7,40\\}\\b"))
+              (txt (nth 2 m))
+              ((string-match-p "[0-9]" txt))
+              ((string-match-p "[a-f]" txt)))
+    txt))
+
+(defun init-dwim--issue-reference-at-point ()
+  "Return \"#123\" or \"PROJ-123\" at point, or nil."
+  (when-let ((m (init-dwim--match-at-point
+                 "#[0-9]\\{1,5\\}\\b\\|\\b[A-Z][A-Z0-9]+-[0-9]+\\b")))
+    (let ((txt (nth 2 m))
+          (before (and (> (nth 0 m) (point-min)) (char-before (nth 0 m)))))
+      (cond
+       ((string-prefix-p "#" txt)
+        (unless (or (and before (or (eq before ?&) (<= ?0 before ?9)
+                                    (<= ?a before ?z) (<= ?A before ?Z)))
+                    (derived-mode-p 'css-mode 'scss-mode 'html-mode 'mhtml-mode))
+          txt))
+       (t txt)))))
+
+(defun init-dwim--gh-async (&rest args)
+  "Run the `gh' CLI with ARGS asynchronously from the project root."
+  (let ((default-directory (init-dwim--project-root)))
+    (apply #'start-process "init-dwim-gh" "*init-dwim-gh*" "gh" args)
+    (message "gh %s ..." (string-join args " "))))
+
+(defun init-dwim--commit-message-buffer-p ()
+  "Return non-nil in a git commit message buffer."
+  (or (derived-mode-p 'git-commit-mode)
+      (and buffer-file-name
+           (string-match-p "/COMMIT_EDITMSG\\'" buffer-file-name))))
+
+(defun init-dwim--commit-comment-start ()
+  "Return the position where the comment block starts (or `point-max')."
+  (save-excursion
+    (goto-char (point-min))
+    (if (re-search-forward "^#" nil t) (match-beginning 0) (point-max))))
+
+(defun init-dwim--insert-commit-trailer (key value)
+  "Insert the trailer KEY: VALUE after the message body."
+  (when (string-empty-p (string-trim (buffer-substring-no-properties
+                                      (point-min) (init-dwim--commit-comment-start))))
+    (user-error "Write a subject line first"))
+  (save-excursion
+    (goto-char (init-dwim--commit-comment-start))
+    (skip-chars-backward "\n")
+    (let ((last-line (buffer-substring-no-properties (line-beginning-position) (point))))
+      (insert (if (string-match-p "\\`[A-Za-z-]+: " last-line) "\n" "\n\n")
+              key ": " value))))
+
+(defun init-dwim--set-conventional-prefix ()
+  "Prompt for and set a Conventional Commits prefix on the subject line."
+  (let* ((type (completing-read "Type: " init-dwim-conventional-commit-types nil t))
+         (scope (read-string "Scope (optional): "))
+         (breaking (y-or-n-p "Breaking change? "))
+         (prefix (format "%s%s%s: " type
+                         (if (string-empty-p scope) "" (format "(%s)" scope))
+                         (if breaking "!" ""))))
+    (save-excursion
+      (goto-char (point-min))
+      (when (looking-at "[a-z]+\\(?:([^)\n]*)\\)?!?: ")
+        (delete-region (match-beginning 0) (match-end 0)))
+      (insert prefix))))
+
+(defun init-dwim--branch-ticket ()
+  "Extract a ticket id (PROJ-12 or #12) from the branch name, or nil."
+  (when-let ((br (init-dwim--git-branch)))
+    (cond ((string-match "\\b\\([A-Z][A-Z0-9]+-[0-9]+\\)\\b" br) (match-string 1 br))
+          ((string-match "\\(?:^\\|/\\)\\([0-9]+\\)[-_]" br)
+           (concat "#" (match-string 1 br))))))
+
+(defun init-dwim--ai-draft-commit-message ()
+  "Insert an AI-drafted commit message from the staged diff."
+  (let ((diff (or (init-dwim--gptel-staged-diff) (user-error "No staged changes")))
+        (buf (current-buffer)))
+    (message "Drafting commit message...")
+    (gptel-request
+     (format "Write a Conventional Commit message for this staged diff. Output only the message: subject under 72 chars, blank line, then a short body if useful.\n\n%s"
+             (substring diff 0 (min 12000 (length diff))))
+     :system init-dwim-ai-system-prompt
+     :callback (lambda (response _info)
+                 (when (and (stringp response) (buffer-live-p buf))
+                   (with-current-buffer buf
+                     (save-excursion
+                       (goto-char (point-min))
+                       (insert (string-trim
+                                (replace-regexp-in-string
+                                 "\\`[ \t\n]*```[a-z]*\n\\|\n```[ \t\n]*\\'" "" response))
+                               "\n"))))))))
+
+(defun init-dwim--clipboard-string ()
+  "Return the head of the kill ring as a plain string, or nil."
+  (when-let ((s (ignore-errors (current-kill 0 t))))
+    (and (stringp s)
+         (not (string-empty-p (string-trim s)))
+         (<= (length s) 200000)
+         (substring-no-properties s))))
+
+(defun init-dwim--link-string (url desc)
+  "Return a link to URL with DESC in Org/Markdown buffers, else nil."
+  (cond ((derived-mode-p 'org-mode) (format "[[%s][%s]]" url desc))
+        ((init-dwim--markdown-mode-p) (format "[%s](%s)" desc url))))
+
+(defun init-dwim--paste-text (text beg end &optional own-line)
+  "Insert TEXT, replacing BEG..END when non-nil; OWN-LINE starts a fresh line."
+  (when beg
+    (delete-region beg end)
+    (goto-char beg)
+    (deactivate-mark))
+  (when (and own-line (not (bolp))) (insert "\n"))
+  (insert text))
+
+(defun init-dwim--prefix-lines (text prefix)
+  "Prefix each non-blank line of TEXT with PREFIX."
+  (mapconcat (lambda (l) (if (string-empty-p l) l (concat prefix l)))
+             (split-string text "\n") "\n"))
+
+(defun init-dwim--uuid4 ()
+  "Return a random (version 4) UUID string."
+  (format "%08x-%04x-4%03x-%04x-%012x"
+          (random #x100000000) (random #x10000) (random #x1000)
+          (logior #x8000 (random #x4000)) (random #x1000000000000)))
+
+(defun init-dwim--bump-semver (txt part)
+  "Return semver TXT with PART (`major', `minor' or `patch') bumped."
+  (when (string-match "\\`\\(v?\\)\\([0-9]+\\)\\.\\([0-9]+\\)\\.\\([0-9]+\\)" txt)
+    (let ((v  (match-string 1 txt))
+          (ma (string-to-number (match-string 2 txt)))
+          (mi (string-to-number (match-string 3 txt)))
+          (pa (string-to-number (match-string 4 txt))))
+      (pcase part
+        ('major (setq ma (1+ ma) mi 0 pa 0))
+        ('minor (setq mi (1+ mi) pa 0))
+        ('patch (setq pa (1+ pa))))
+      (format "%s%d.%d.%d" v ma mi pa))))
+
+(defun init-dwim--hex-to-rgb (hex)
+  "Return (R G B) 0-255 for a #RGB or #RRGGBB string HEX, or nil.
+Parsed by hand: `color-name-to-rgb' snaps to ANSI colors on TTY frames."
+  (when (string-match "\\`#\\([0-9a-fA-F]\\{3\\}\\|[0-9a-fA-F]\\{6\\}\\)\\'" hex)
+    (let ((h (match-string 1 hex)))
+      (when (= (length h) 3)
+        (setq h (mapconcat (lambda (c) (string c c)) h "")))
+      (list (string-to-number (substring h 0 2) 16)
+            (string-to-number (substring h 2 4) 16)
+            (string-to-number (substring h 4 6) 16)))))
+
+(defun init-dwim--split-identifier (s)
+  "Split identifier S into lower-case words."
+  (let ((case-fold-search nil))
+    (setq s (replace-regexp-in-string "\\([a-z0-9]\\)\\([A-Z]\\)" "\\1 \\2" s))
+    (setq s (replace-regexp-in-string "\\([A-Z]+\\)\\([A-Z][a-z]\\)" "\\1 \\2" s))
+    (split-string (downcase s) "[-_ ]+" t)))
+
+(defun init-dwim--string-bounds ()
+  "Return (BEG . END) of the plain string around point, or nil."
+  (let ((ppss (syntax-ppss)))
+    (when (nth 3 ppss)
+      (let ((beg (nth 8 ppss)))
+        (save-excursion
+          (goto-char beg)
+          (ignore-errors (forward-sexp) (cons beg (point))))))))
+
+(defun init-dwim--toggle-quotes (beg end)
+  "Switch the string BEG..END between single and double quotes."
+  (let* ((old (char-after beg))
+         (new (if (eq old ?\") ?' ?\"))
+         (inner (buffer-substring-no-properties (1+ beg) (1- end))))
+    (setq inner (replace-regexp-in-string
+                 (regexp-quote (string ?\\ old)) (string old) inner t t))
+    (setq inner (replace-regexp-in-string
+                 (regexp-quote (string new)) (string ?\\ new) inner t t))
+    (init-dwim--replace-span beg end (concat (string new) inner (string new)))))
+
+(defvar init-dwim-extra--file-cache (make-hash-table :test 'equal)
+  "Cache of parsed project files, keyed by absolute file name.")
+
+(defun init-dwim-extra--cached-file-parse (file parser)
+  "Run PARSER in a temp buffer holding FILE; cache the result by mtime."
+  (when (file-readable-p file)
+    (let* ((mtime (file-attribute-modification-time (file-attributes file)))
+           (hit (gethash file init-dwim-extra--file-cache)))
+      (if (and hit (equal (car hit) mtime))
+          (cdr hit)
+        (let ((value (with-temp-buffer
+                       (insert-file-contents file nil 0 200000)
+                       (goto-char (point-min))
+                       (funcall parser))))
+          (puthash file (cons mtime value) init-dwim-extra--file-cache)
+          value)))))
+
+(defun init-dwim-extra--parse-make-targets ()
+  "Return the Makefile target names in the current buffer."
+  (let (targets)
+    (while (re-search-forward
+            "^\\([A-Za-z0-9][A-Za-z0-9_./-]*\\)[ \t]*:\\(?:[^=:]\\|$\\)" nil t)
+      (let ((target (match-string 1)))
+        (unless (or (member target targets) (string-match-p "%" target))
+          (push target targets))))
+    (seq-take (nreverse targets) 40)))
+
+(defun init-dwim-extra--parse-taskfile ()
+  "Return task names (two-space indented keys under `tasks:')."
+  (let (names)
+    (when (re-search-forward "^tasks:[ \t]*$" nil t)
+      (forward-line 1)
+      (while (and (not (eobp))
+                  (looking-at "\\(?:[ \t]+.*\\|[ \t]*#.*\\|[ \t]*\\)$"))
+        (when (looking-at "  \\([A-Za-z0-9_:.-]+\\):")
+          (push (match-string 1) names))
+        (forward-line 1)))
+    (seq-take (nreverse names) 40)))
+
+(defun init-dwim-extra--task-priority (name)
+  "Return a priority for a project task called NAME."
+  (cond
+   ((member name '("test" "tests" "check")) 90)
+   ((member name '("build" "all" "compile")) 86)
+   ((member name '("lint" "fmt" "format")) 82)
+   ((member name '("run" "dev" "start" "serve")) 78)
+   ((member name '("clean")) 60)
+   (t 66)))
+
+(defun init-dwim-extra--js-package-manager ()
+  "Return the JavaScript package manager used by the current project."
+  (cond
+   ((init-dwim-extra--project-has-any-file-p "bun.lockb" "bun.lock") "bun")
+   ((init-dwim-extra--project-has-file-p "pnpm-lock.yaml") "pnpm")
+   ((init-dwim-extra--project-has-file-p "yarn.lock") "yarn")
+   (t "npm")))
+
+(defun init-dwim-extra--project-command-action (program argument &optional priority)
+  "Create an action that runs PROGRAM with ARGUMENT from the project root."
+  (let ((command (format "%s %s" program (shell-quote-argument argument)))
+        (executable (car (split-string program))))
+    (init-dwim-make-action
+     :title (format "%s %s" program argument)
+     :description (format "Run `%s %s' in the project" program argument)
+     :category "Project"
+     :priority (or priority 66)
+     :predicate (lambda () (executable-find executable))
+     :action (lambda () (init-dwim--run-in-project command)))))
+
 ;;;; Providers
 
 ;;; ── Region ────────────────────────────────────────────────────────────────
@@ -1916,6 +2375,189 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
         :action (lambda ()
                   (delete-region beg end)
                   (insert (upcase-initials text))))))))
+
+(defun init-dwim-clipboard-provider ()
+  "Actions that depend on what the clipboard contains."
+  (when (and (not buffer-read-only) (init-dwim--clipboard-string))
+    (let* ((clip     (init-dwim--clipboard-string))
+           (trimmed  (string-trim clip))
+           (region   (init-dwim--region-bounds))
+           (rb       (car region))
+           (re       (cdr region))
+           (rtext    (init-dwim--region-string))
+           (multi    (string-match-p "\n" trimmed))
+           (url-p    (string-match-p "\\`https?://[^[:space:]]+\\'" trimmed))
+           (file     (and (not multi)
+                          (< (length trimmed) 512)
+                          (not (file-remote-p default-directory))
+                          (not (file-remote-p trimmed))
+                          (ignore-errors
+                            (let ((f (expand-file-name (init-dwim--clean-path trimmed))))
+                              (and (file-exists-p f) f)))))
+           (json-p   (and (string-match-p "\\`[[{]" trimmed)
+                          (fboundp 'json-parse-string)
+                          (and (ignore-errors (json-parse-string trimmed)) t)))
+           (actions nil))
+      (when url-p
+        (when (and region (init-dwim--link-string "x" "x"))
+          (push
+           (init-dwim-make-action
+            :title "Link region to clipboard URL"
+            :description "Turn the selected text into a link to the clipboard URL"
+            :category "Paste"
+            :priority 93
+            :action (lambda ()
+                      (init-dwim--paste-text
+                       (init-dwim--link-string trimmed rtext) rb re)))
+           actions))
+
+        (when (and (not region) (init-dwim--link-string "x" "x"))
+          (push
+           (init-dwim-make-action
+            :title "Paste clipboard URL as link"
+            :description "Insert the clipboard URL as a link with text you enter"
+            :category "Paste"
+            :priority 88
+            :action (lambda ()
+                      (insert (init-dwim--link-string
+                               trimmed (read-string "Link text: " trimmed)))))
+           actions))
+
+        (push
+         (init-dwim-make-action
+          :title "Open clipboard URL"
+          :description "Open the URL held in the clipboard in a browser"
+          :category "Paste"
+          :priority 60
+          :action (lambda () (browse-url trimmed)))
+         actions))
+
+      (when file
+        (push
+         (init-dwim-make-action
+          :title "Open file from clipboard"
+          :description "Visit the file whose path is in the clipboard"
+          :category "Paste"
+          :priority 80
+          :action (lambda () (find-file file)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Paste clipboard path relative to buffer"
+          :description "Insert the clipboard file path relative to the current directory"
+          :category "Paste"
+          :priority 70
+          :action (lambda ()
+                    (init-dwim--paste-text
+                     (file-relative-name file default-directory) rb re)))
+         actions))
+
+      (when json-p
+        (push
+         (init-dwim-make-action
+          :title "Paste clipboard JSON pretty-printed"
+          :description "Insert the clipboard JSON with indentation"
+          :category "Paste"
+          :priority 85
+          :action (lambda ()
+                    (init-dwim--paste-text
+                     (with-temp-buffer
+                       (insert trimmed)
+                       (json-pretty-print-buffer)
+                       (string-trim-right (buffer-string)))
+                     rb re)))
+         actions))
+
+      (when region
+        (push
+         (init-dwim-make-action
+          :title "Replace region with clipboard"
+          :description "Swap the selected text for the clipboard contents"
+          :category "Paste"
+          :priority 86
+          :action (lambda () (init-dwim--paste-text clip rb re)))
+         actions))
+
+      (when multi
+        (push
+         (init-dwim-make-action
+          :title "Paste clipboard as quoted lines"
+          :description "Prefix every line with \"> \""
+          :category "Paste"
+          :priority 62
+          :action (lambda ()
+                    (init-dwim--paste-text
+                     (mapconcat (lambda (l) (if (string-empty-p l) ">" (concat "> " l)))
+                                (split-string (string-trim-right clip "\n+") "\n") "\n")
+                     rb re)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Paste clipboard as single line"
+          :description "Join the clipboard lines into one line"
+          :category "Paste"
+          :priority 58
+          :action (lambda ()
+                    (init-dwim--paste-text
+                     (mapconcat #'identity (split-string trimmed "[ \t\n]+" t) " ")
+                     rb re)))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Paste clipboard indented"
+        :description "Insert the clipboard text indented by a chosen amount"
+        :category "Paste"
+        :priority 56
+        :action (lambda ()
+                  (let ((n (read-number "Indent by columns: " 4)))
+                    (init-dwim--paste-text
+                     (init-dwim--prefix-lines (string-trim-right clip "\n+")
+                                              (make-string (max 0 (floor n)) ?\s))
+                     rb re))))
+       actions)
+
+      (when comment-start
+        (push
+         (init-dwim-make-action
+          :title "Paste clipboard as comment"
+          :description "Insert the clipboard text commented out for this mode"
+          :category "Paste"
+          :priority 57
+          :action (lambda ()
+                    (let ((start (or rb (point))))
+                      (init-dwim--paste-text (string-trim-right clip "\n+") rb re)
+                      (comment-region start (point)))))
+         actions))
+
+      (when (or (derived-mode-p 'org-mode) (init-dwim--markdown-mode-p))
+        (push
+         (init-dwim-make-action
+          :title "Paste clipboard as code block"
+          :description "Insert the clipboard text in a fenced or src block"
+          :category "Paste"
+          :priority 64
+          :action (lambda ()
+                    (let* ((lang (read-string "Language: "))
+                           (body (string-trim-right clip "\n+")))
+                      (init-dwim--paste-text
+                       (if (derived-mode-p 'org-mode)
+                           (format "#+begin_src %s\n%s\n#+end_src\n" lang body)
+                         (format "```%s\n%s\n```\n" lang body))
+                       rb re t))))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Paste clipboard as plain text"
+        :description "Insert the kill-ring head without text properties"
+        :category "Paste"
+        :priority 48
+        :action (lambda () (init-dwim--paste-text clip rb re)))
+       actions)
+      actions)))
 
 ;;; ── URL ───────────────────────────────────────────────────────────────────
 
@@ -3830,6 +4472,313 @@ If ASYNC is non-nil use `async-shell-command', otherwise use `compile'."
          :priority 54
          :predicate (lambda () (fboundp 'magit-bisect))
          :action (lambda () (call-interactively #'magit-bisect))))))))
+
+(defun init-dwim-git-revision-provider ()
+  "Actions for a commit SHA or an issue reference at point."
+  (unless (file-remote-p default-directory)
+    (let (actions)
+      (when-let* ((sha (init-dwim--commit-sha-at-point))
+                  (full (init-dwim--git-output "rev-parse" "--verify" "--quiet"
+                                               (concat sha "^{commit}"))))
+        (let ((short (substring full 0 7)))
+          (push
+           (init-dwim-make-action
+            :title (format "Show commit %s" short)
+            :description "Open the commit in Magit (or `git show')"
+            :category "GitRef"
+            :priority 97
+            :action (lambda ()
+                      (if (fboundp 'magit-show-commit)
+                          (magit-show-commit full)
+                        (let ((default-directory (init-dwim--project-root)))
+                          (shell-command (format "git show %s" full))))))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title "Copy full commit hash"
+            :description "Copy the full 40-character hash to the kill ring"
+            :category "GitRef"
+            :priority 90
+            :action (lambda () (kill-new full) (message "Copied %s" full)))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title "Open commit on forge"
+            :description "Open this commit in the browser on the remote forge"
+            :category "GitRef"
+            :priority 82
+            :predicate (lambda () (init-dwim--git-remote-info))
+            :action (lambda ()
+                      (browse-url
+                       (init-dwim--forge-commit-url
+                        (or (init-dwim--git-remote-info)
+                            (user-error "No parsable origin remote"))
+                        full))))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title (format "Cherry-pick %s" short)
+            :description "Apply this commit onto the current branch"
+            :category "GitRef"
+            :priority 70
+            :action (lambda ()
+                      (when (y-or-n-p (format "Cherry-pick %s onto %s? "
+                                              short (init-dwim--git-branch)))
+                        (if (fboundp 'magit-run-git)
+                            (magit-run-git "cherry-pick" full)
+                          (init-dwim--run-in-project
+                           (format "git cherry-pick %s" full))))))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title (format "Checkout %s (detached)" short)
+            :description "Check out this commit with a detached HEAD"
+            :category "GitRef"
+            :priority 66
+            :action (lambda ()
+                      (when (y-or-n-p (format "Checkout %s? " short))
+                        (if (fboundp 'magit-checkout)
+                            (magit-checkout full)
+                          (init-dwim--run-in-project
+                           (format "git checkout %s" full))))))
+           actions)))
+
+      (when-let ((ref (init-dwim--issue-reference-at-point)))
+        (push
+         (init-dwim-make-action
+          :title (format "Copy reference %s" ref)
+          :description "Copy the issue reference to the kill ring"
+          :category "Issue"
+          :priority 80
+          :action (lambda () (kill-new ref) (message "Copied %s" ref)))
+         actions)
+
+        (if (string-prefix-p "#" ref)
+            (when (init-dwim--git-remote-info)
+              (push
+               (init-dwim-make-action
+                :title (format "Open %s on forge" ref)
+                :description "Open this issue in the browser on the remote forge"
+                :category "Issue"
+                :priority 94
+                :action (lambda ()
+                          (browse-url
+                           (init-dwim--forge-issue-url
+                            (init-dwim--git-remote-info)
+                            (substring ref 1)))))
+               actions))
+
+          (when init-dwim-issue-tracker-url-format
+            (push
+             (init-dwim-make-action
+              :title (format "Open %s in tracker" ref)
+              :description "Open this ticket in the configured issue tracker"
+              :category "Issue"
+              :priority 94
+              :action (lambda ()
+                        (browse-url
+                         (format init-dwim-issue-tracker-url-format ref))))
+             actions))))
+      actions)))
+
+(defun init-dwim-git-remote-provider ()
+  "Open or share the current file, branch or repo on the origin forge."
+  (when-let ((info (init-dwim--git-remote-info)))
+    (let ((range (init-dwim--line-range))
+          (file (buffer-file-name))
+          (actions nil))
+      (when file
+        (push
+         (init-dwim-make-action
+          :title "Open on forge (branch, at line)"
+          :description "Open this file/line (or region) on the forge"
+          :category "Forge"
+          :priority 78
+          :action (lambda ()
+                    (let* ((rel (or (init-dwim--git-relative-path)
+                                    (user-error "File is not inside the git work tree")))
+                           (br  (init-dwim--git-branch))
+                           (rev (if (member br '(nil "HEAD"))
+                                    (init-dwim--git-output "rev-parse" "HEAD")
+                                  br)))
+                      (browse-url (init-dwim--forge-file-url info rev rel range)))))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Copy permalink (commit-pinned)"
+          :description "Copy a link pinned to HEAD, with line or region"
+          :category "Forge"
+          :priority 76
+          :action (lambda ()
+                    (let* ((rel (or (init-dwim--git-relative-path)
+                                    (user-error "File is not inside the git work tree")))
+                           (rev (or (init-dwim--git-output "rev-parse" "HEAD")
+                                    (user-error "No commit yet")))
+                           (url (init-dwim--forge-file-url info rev rel range)))
+                      (kill-new url)
+                      (message "Permalink copied (%s; push it for the link to resolve)"
+                               (substring rev 0 7)))))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Open repository on forge"
+        :description "Open the repository home page in the browser"
+        :category "Forge"
+        :priority 60
+        :action (lambda () (browse-url (plist-get info :base))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Open PR / compare page for branch"
+        :description "Open the pull request page for the current branch"
+        :category "Forge"
+        :priority 70
+        :action (lambda ()
+                  (let ((br (init-dwim--git-branch)))
+                    (when (member br '(nil "HEAD"))
+                      (user-error "Not on a branch"))
+                    (browse-url (init-dwim--forge-pr-url info br)))))
+       actions)
+
+      (when (and (eq (plist-get info :kind) 'github) (executable-find "gh"))
+        (push
+         (init-dwim-make-action
+          :title "gh: view PR in browser"
+          :description "Open the current branch's pull request with the gh CLI"
+          :category "Forge"
+          :priority 66
+          :action (lambda () (init-dwim--gh-async "pr" "view" "--web")))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "gh: create PR (web)"
+          :description "Start a new pull request in the browser with the gh CLI"
+          :category "Forge"
+          :priority 64
+          :action (lambda () (init-dwim--gh-async "pr" "create" "--web")))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "gh: PR checks"
+          :description "Show CI check status for the current pull request"
+          :category "Forge"
+          :priority 62
+          :action (lambda () (init-dwim--run-in-project "gh pr checks")))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "gh: recent workflow runs"
+          :description "List the most recent GitHub Actions runs"
+          :category "Forge"
+          :priority 58
+          :action (lambda () (init-dwim--run-in-project "gh run list --limit 10")))
+         actions))
+      actions)))
+
+(defun init-dwim-commit-message-provider ()
+  "Actions for git commit message buffers."
+  (when (init-dwim--commit-message-buffer-p)
+    (let (actions)
+      (push
+       (init-dwim-make-action
+        :title "Set conventional-commit prefix"
+        :description "feat(scope)!: style prefix on the subject line"
+        :category "Commit"
+        :priority 96
+        :action #'init-dwim--set-conventional-prefix)
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Add ticket from branch name"
+        :description "Add a Refs trailer using the ticket id in the branch name"
+        :category "Commit"
+        :priority 92
+        :action (lambda ()
+                  (let ((ticket (or (init-dwim--branch-ticket)
+                                    (user-error "No ticket id in branch name"))))
+                    (init-dwim--insert-commit-trailer "Refs" ticket))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Add Co-authored-by trailer"
+        :description "Credit another author from the recent commit history"
+        :category "Commit"
+        :priority 80
+        :action (lambda ()
+                  (let* ((out (or (init-dwim--git-output "log" "-n" "300" "--format=%aN <%aE>")
+                                  (user-error "No commit authors found")))
+                         (who (completing-read
+                               "Co-author: "
+                               (delete-dups (split-string out "\n" t)) nil nil)))
+                    (init-dwim--insert-commit-trailer "Co-authored-by" who))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Add Signed-off-by trailer"
+        :description "Add a Signed-off-by trailer from your git identity"
+        :category "Commit"
+        :priority 78
+        :action (lambda ()
+                  (let ((n (init-dwim--git-output "config" "user.name"))
+                        (e (init-dwim--git-output "config" "user.email")))
+                    (unless (and n e) (user-error "git user.name/user.email not set"))
+                    (init-dwim--insert-commit-trailer
+                     "Signed-off-by" (format "%s <%s>" n e)))))
+       actions)
+
+      (when (init-dwim--gptel-available-p)
+        (push
+         (init-dwim-make-action
+          :title "Draft message with AI from staged diff"
+          :description "Inserts a drafted message at the top of the buffer"
+          :category "Commit"
+          :priority 90
+          :action #'init-dwim--ai-draft-commit-message)
+         actions))
+
+      (when (fboundp 'magit-diff-staged)
+        (push
+         (init-dwim-make-action
+          :title "Show staged diff"
+          :description "Display the changes that will be committed"
+          :category "Commit"
+          :priority 72
+          :action (lambda () (magit-diff-staged)))
+         actions))
+
+      (when (fboundp 'with-editor-finish)
+        (push
+         (init-dwim-make-action
+          :title "Finish commit"
+          :description "Save the message and create the commit"
+          :category "Commit"
+          :priority 100
+          :action (lambda () (call-interactively #'with-editor-finish)))
+         actions))
+
+      (when (fboundp 'with-editor-cancel)
+        (push
+         (init-dwim-make-action
+          :title "Cancel commit"
+          :description "Abort the commit and discard the message"
+          :category "Commit"
+          :priority 60
+          :action (lambda () (call-interactively #'with-editor-cancel)))
+         actions))
+      actions)))
 
 ;;; ── Project ───────────────────────────────────────────────────────────────
 
@@ -6699,6 +7648,86 @@ is retained for compatibility but returns nil."
                         (fboundp 'flymake-show-diagnostic)))
       :action #'flymake-show-diagnostic))))
 
+(defun init-dwim-diagnostic-at-point-provider ()
+  "Actions for the Flymake diagnostic at point (or on the current line)."
+  (when (and (bound-and-true-p flymake-mode) (fboundp 'flymake-diagnostics))
+    (when-let* ((diag (or (car (flymake-diagnostics (point)))
+                          (car (flymake-diagnostics (line-beginning-position)
+                                                    (line-end-position)))))
+                (text (flymake-diagnostic-text diag)))
+      (let* ((code  (init-dwim--diagnostic-code diag))
+             (first (car (split-string text "\n")))
+             (spec  (init-dwim--diagnostic-suppression code))
+             (actions nil))
+        (when (init-dwim-extra--eglot-managed-p)
+          (push
+           (init-dwim-make-action
+            :title "Quick-fix diagnostic"
+            :description "Apply an LSP quick-fix for the problem here"
+            :category "Diagnostic"
+            :priority 96
+            :predicate (lambda () (fboundp 'eglot-code-action-quickfix))
+            :action (lambda () (call-interactively #'eglot-code-action-quickfix)))
+           actions))
+
+        (push
+         (init-dwim-make-action
+          :title "Copy diagnostic message"
+          :description "Copy the diagnostic text to the kill ring"
+          :category "Diagnostic"
+          :priority 90
+          :action (lambda () (kill-new text) (message "Copied: %s" first)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Search diagnostic on the web"
+          :description "Search the web for this diagnostic message"
+          :category "Diagnostic"
+          :priority 72
+          :action (lambda ()
+                    (browse-url
+                     (format init-dwim-web-search-url
+                             (url-hexify-string
+                              (format "%s %s"
+                                      (replace-regexp-in-string
+                                       "-mode\\'" "" (symbol-name major-mode))
+                                      first))))))
+         actions)
+
+        (when spec
+          (push
+           (init-dwim-make-action
+            :title "Suppress diagnostic with comment"
+            :description (format "Insert `%s' to silence this diagnostic" (cdr spec))
+            :category "Diagnostic"
+            :priority 74
+            :action (lambda () (init-dwim--insert-suppression spec)))
+           actions))
+
+        (when (init-dwim--gptel-available-p)
+          (push
+           (init-dwim-make-action
+            :title "Ask AI to explain diagnostic"
+            :description "Ask the AI to explain the cause and the minimal fix"
+            :category "Diagnostic"
+            :priority 64
+            :action (lambda ()
+                      (let* ((line (buffer-substring-no-properties
+                                    (line-beginning-position)
+                                    (line-end-position)))
+                             (ctx (or (ignore-errors (init-dwim--gptel-defun-text))
+                                      line)))
+                        (init-dwim--gptel-request-to-buffer
+                         init-dwim-ai-system-prompt
+                         (format "[%s] The checker reports%s:\n%s\n\nOn this line:\n%s\n\nContext:\n%s\n\nExplain the cause and the minimal fix."
+                                 major-mode
+                                 (if code (format " (code %s)" code) "")
+                                 text line
+                                 (substring ctx 0 (min 3000 (length ctx))))))))
+           actions))
+        actions))))
+
 ;;; ── Org clock (NEW) ───────────────────────────────────────────────────────
 
 (defun init-dwim-org-clock-provider ()
@@ -7109,6 +8138,266 @@ is retained for compatibility but returns nil."
       :action (lambda ()
                 (kill-new (number-to-string num))
                 (message "Copied: %s" num))))))
+
+(defun init-dwim-literal-provider ()
+  "Actions for dates, UUIDs, versions, colors, booleans, emails, strings, names."
+  (let ((actions nil))
+    (unless buffer-read-only
+      ;; Epoch timestamps
+      (when-let ((m (init-dwim--match-at-point
+                     "\\b[0-9]\\{10\\}\\(?:[0-9]\\{3\\}\\)?\\b")))
+        (let* ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m))
+               (secs (if (= (length txt) 13)
+                         (/ (string-to-number txt) 1000.0)
+                       (string-to-number txt)))
+               (human (format-time-string "%Y-%m-%d %H:%M:%S %z" secs)))
+          (push
+           (init-dwim-make-action
+            :title "Epoch → date (show and copy)"
+            :description "Show the Unix timestamp as a local date and copy it"
+            :category "Literal"
+            :priority 95
+            :action (lambda () (kill-new human) (message "%s" human)))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title "Epoch → UTC ISO 8601 (replace)"
+            :description "Replace the Unix timestamp with an ISO 8601 UTC date"
+            :category "Literal"
+            :priority 93
+            :action (lambda ()
+                      (init-dwim--replace-span
+                       beg end (format-time-string "%Y-%m-%dT%H:%M:%SZ" secs t))))
+           actions)))
+      ;; ISO dates
+      (when-let ((m (init-dwim--match-at-point
+                     "\\b[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\(?:[T ][0-9]\\{2\\}:[0-9]\\{2\\}\\(?::[0-9]\\{2\\}\\)?\\(?:Z\\|[+-][0-9]\\{2\\}:?[0-9]\\{2\\}\\)?\\)?")))
+        (let ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m)))
+          (push
+           (init-dwim-make-action
+            :title "ISO date → epoch seconds (replace)"
+            :description "Replace the date with its Unix timestamp in seconds"
+            :category "Literal"
+            :priority 94
+            :action (lambda ()
+                      (init-dwim--replace-span
+                       beg end
+                       (number-to-string
+                        (floor (float-time
+                                (condition-case nil (date-to-time txt)
+                                  (error (user-error "Cannot parse %s" txt)))))))))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title "Show relative time"
+            :description "Show how long ago or from now this date is"
+            :category "Literal"
+            :priority 80
+            :action (lambda ()
+                      (let* ((then (float-time
+                                    (condition-case nil (date-to-time txt)
+                                      (error (user-error "Cannot parse %s" txt)))))
+                             (days (/ (- (float-time) then) 86400.0)))
+                        (message "%s is %.1f days %s" txt (abs days)
+                                 (if (>= days 0) "ago" "from now")))))
+           actions)))
+      ;; UUIDs
+      (when-let ((m (init-dwim--match-at-point
+                     "\\b[0-9a-fA-F]\\{8\\}-[0-9a-fA-F]\\{4\\}-[0-9a-fA-F]\\{4\\}-[0-9a-fA-F]\\{4\\}-[0-9a-fA-F]\\{12\\}\\b")))
+        (let ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m)))
+          (push
+           (init-dwim-make-action
+            :title "Copy UUID"
+            :description "Copy the UUID at point to the kill ring"
+            :category "Literal"
+            :priority 90
+            :action (lambda () (kill-new txt) (message "Copied %s" txt)))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title "Regenerate UUID"
+            :description "Replace the UUID at point with a fresh random one"
+            :category "Literal"
+            :priority 85
+            :action (lambda () (init-dwim--replace-span beg end (init-dwim--uuid4))))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title (if (string= txt (downcase txt)) "UUID to upper case" "UUID to lower case")
+            :description "Change the case of the UUID at point"
+            :category "Literal"
+            :priority 70
+            :action (lambda ()
+                      (init-dwim--replace-span
+                       beg end (if (string= txt (downcase txt)) (upcase txt) (downcase txt)))))
+           actions)))
+      ;; Semantic versions
+      (when-let* ((m (init-dwim--match-at-point
+                      "\\bv?[0-9]+\\.[0-9]+\\.[0-9]+\\(?:-[0-9A-Za-z.-]+\\)?\\b"))
+                  ((not (save-excursion (goto-char (nth 1 m)) (looking-at-p "\\.[0-9]")))))
+        (let ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m)))
+          (dolist (spec '((major "Bump major version" 91)
+                          (minor "Bump minor version" 90)
+                          (patch "Bump patch version" 89)))
+            (let ((part (nth 0 spec)))
+              (push
+               (init-dwim-make-action
+                :title (nth 1 spec)
+                :description (format "Change %s to %s" txt (init-dwim--bump-semver txt part))
+                :category "Literal"
+                :priority (nth 2 spec)
+                :action (lambda ()
+                          (init-dwim--replace-span
+                           beg end (init-dwim--bump-semver txt part))))
+               actions)))))
+      ;; Colors
+      (when-let ((m (init-dwim--match-at-point
+                     "#\\(?:[0-9a-fA-F]\\{3\\}\\)\\{1,2\\}\\b")))
+        (let* ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m))
+               (rgb (init-dwim--hex-to-rgb txt)))
+          (when rgb
+            (push
+             (init-dwim-make-action
+              :title "Color → rgb()"
+              :description "Rewrite the hex color as an rgb() expression"
+              :category "Literal"
+              :priority 88
+              :action (lambda ()
+                        (init-dwim--replace-span
+                         beg end (format "rgb(%d, %d, %d)" (nth 0 rgb) (nth 1 rgb) (nth 2 rgb)))))
+             actions)
+
+            (push
+             (init-dwim-make-action
+              :title "Color → hsl()"
+              :description "Rewrite the hex color as an hsl() expression"
+              :category "Literal"
+              :priority 87
+              :action (lambda ()
+                        (pcase-let ((`(,h ,s ,l)
+                                     (apply #'color-rgb-to-hsl
+                                            (mapcar (lambda (x) (/ x 255.0)) rgb))))
+                          (init-dwim--replace-span
+                           beg end (format "hsl(%d, %d%%, %d%%)"
+                                           (round (* 360 h)) (round (* 100 s)) (round (* 100 l)))))))
+             actions))))
+
+      (when-let ((m (init-dwim--match-at-point
+                     "rgb(\\s-*[0-9]+\\s-*,\\s-*[0-9]+\\s-*,\\s-*[0-9]+\\s-*)")))
+        (let ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m)))
+          (push
+           (init-dwim-make-action
+            :title "rgb() → hex color"
+            :description "Rewrite the rgb() expression as a hex color"
+            :category "Literal"
+            :priority 88
+            :action (lambda ()
+                      (let ((n (mapcar #'string-to-number
+                                       (split-string (replace-regexp-in-string "[^0-9,]" "" txt) ","))))
+                        (init-dwim--replace-span
+                         beg end (apply #'format "#%02x%02x%02x"
+                                        (mapcar (lambda (x) (max 0 (min 255 x))) n))))))
+           actions)))
+      ;; Booleans
+      (when-let ((m (init-dwim--match-at-point
+                     "\\b\\(?:true\\|false\\|True\\|False\\|TRUE\\|FALSE\\)\\b")))
+        (let ((beg (nth 0 m)) (end (nth 1 m))
+              (new (cdr (assoc (nth 2 m) '(("true" . "false") ("false" . "true")
+                                           ("True" . "False") ("False" . "True")
+                                           ("TRUE" . "FALSE") ("FALSE" . "TRUE"))))))
+          (push
+           (init-dwim-make-action
+            :title (format "Toggle to %s" new)
+            :description "Flip the boolean literal at point"
+            :category "Literal"
+            :priority 92
+            :action (lambda () (init-dwim--replace-span beg end new)))
+           actions)))
+      ;; Quote style
+      (when (derived-mode-p 'python-mode 'python-ts-mode 'js-mode 'js-ts-mode 'js2-mode
+                            'typescript-mode 'typescript-ts-mode 'tsx-ts-mode
+                            'ruby-mode 'ruby-ts-mode)
+        (when-let* ((b (init-dwim--string-bounds))
+                    ((memq (char-after (car b)) '(?\" ?')))
+                    ((not (string-match-p "\\`\\(\"\"\"\\|'''\\)"
+                                          (buffer-substring-no-properties (car b) (cdr b))))))
+          (push
+           (init-dwim-make-action
+            :title (if (eq (char-after (car b)) ?\") "Switch to single quotes" "Switch to double quotes")
+            :description "Change the string delimiters, re-escaping as needed"
+            :category "Literal"
+            :priority 75
+            :action (lambda () (init-dwim--toggle-quotes (car b) (cdr b))))
+           actions)))
+      ;; Identifier naming style
+      (when-let* ((sym (init-dwim--symbol-string))
+                  (bounds (bounds-of-thing-at-point 'symbol))
+                  (parts (init-dwim--split-identifier sym))
+                  ((> (length parts) 1)))
+        (let ((variants
+               (list (cons "snake_case"  (string-join parts "_"))
+                     (cons "camelCase"   (concat (car parts) (mapconcat #'capitalize (cdr parts) "")))
+                     (cons "PascalCase"  (mapconcat #'capitalize parts ""))
+                     (cons "kebab-case"  (string-join parts "-"))
+                     (cons "SCREAMING_SNAKE" (upcase (string-join parts "_")))))
+              (prio 86))
+          (dolist (v variants)
+            (unless (equal (cdr v) sym)
+              (let ((new (cdr v)))
+                (push
+                 (init-dwim-make-action
+                  :title (format "Identifier → %s" (car v))
+                  :description (format "Rewrite the identifier at point as %s" new)
+                  :category "Literal"
+                  :priority prio
+                  :action (lambda ()
+                            (init-dwim--replace-span (car bounds) (cdr bounds) new)))
+                 actions))
+              (setq prio (1- prio))))))
+      ;; Always-available inserters
+      (push
+       (init-dwim-make-action
+        :title "Insert UUID (v4)"
+        :description "Insert a random version 4 UUID at point"
+        :category "Literal"
+        :priority 44
+        :action (lambda () (insert (init-dwim--uuid4))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Insert UTC ISO timestamp"
+        :description "Insert the current UTC time in ISO 8601 format"
+        :category "Literal"
+        :priority 43
+        :action (lambda () (insert (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))))
+       actions))
+    ;; Emails (works in read-only buffers too)
+    (when-let ((m (init-dwim--match-at-point
+                   "[[:alnum:]._%+-]+@[[:alnum:].-]+\\.[[:alpha:]]\\{2,\\}")))
+      (let ((addr (nth 2 m)))
+        (push
+         (init-dwim-make-action
+          :title "Compose email"
+          :description "Start a new message to the address at point"
+          :category "Literal"
+          :priority 90
+          :action (lambda () (compose-mail addr)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Copy email address"
+          :description "Copy the email address at point to the kill ring"
+          :category "Literal"
+          :priority 80
+          :action (lambda () (kill-new addr) (message "Copied %s" addr)))
+         actions)))
+    actions))
 
 ;;; ── Emacs Lisp development ────────────────────────────────────────────────
 
@@ -8436,18 +9725,20 @@ is retained for compatibility but returns nil."
 
     ;; package.json
     (when (init-dwim-extra--project-has-file-p "package.json")
-      (push
-       (init-dwim-make-action
-        :title "npm install"
-        :description "Install JavaScript dependencies"
-        :category "Project"
-        :priority 67
-        :action (lambda ()
-                  (init-dwim--run-in-project "npm install")))
-       actions)
+      (let ((manager (init-dwim-extra--js-package-manager)))
+        (push
+         (init-dwim-make-action
+          :title (format "%s install" manager)
+          :description "Install JavaScript dependencies"
+          :category "Project"
+          :priority 67
+          :predicate (lambda () (executable-find manager))
+          :action (lambda ()
+                    (init-dwim--run-in-project (format "%s install" manager))))
+         actions))
 
       (dolist (script (init-dwim-extra--package-json-scripts))
-        (push (init-dwim-extra--npm-run-action
+        (push (init-dwim-extra--package-script-action
                script
                (cond
                 ((member script '("test" "check")) 92)
@@ -8628,6 +9919,164 @@ is retained for compatibility but returns nil."
                     (lambda ()
                       (init-dwim--run-in-project cmd))))
          actions)))
+
+    actions))
+
+(defun init-dwim-project-task-extra-provider ()
+  "Return project task actions inferred from additional build files."
+  (let ((actions nil)
+        (root (init-dwim--project-root)))
+
+    ;; Makefile
+    (when-let ((makefile (cl-find-if #'init-dwim-extra--project-has-file-p
+                                     '("Makefile" "makefile" "GNUmakefile"))))
+      (dolist (target (init-dwim-extra--cached-file-parse
+                       (init-dwim-extra--project-file makefile)
+                       #'init-dwim-extra--parse-make-targets))
+        (push (init-dwim-extra--project-command-action
+               "make"
+               target
+               (init-dwim-extra--task-priority target))
+              actions)))
+
+    ;; Taskfile
+    (when-let ((taskfile (cl-find-if #'init-dwim-extra--project-has-file-p
+                                     '("Taskfile.yml" "Taskfile.yaml" "taskfile.yml"))))
+      (dolist (task (init-dwim-extra--cached-file-parse
+                     (init-dwim-extra--project-file taskfile)
+                     #'init-dwim-extra--parse-taskfile))
+        (push (init-dwim-extra--project-command-action
+               "task"
+               task
+               (init-dwim-extra--task-priority task))
+              actions)))
+
+    ;; uv
+    (when (init-dwim-extra--project-has-file-p "uv.lock")
+      (push
+       (init-dwim-make-action
+        :title "uv sync"
+        :description "Install the locked dependencies into the uv environment"
+        :category "Project"
+        :priority 74
+        :predicate (lambda () (executable-find "uv"))
+        :action (lambda ()
+                  (init-dwim--run-in-project "uv sync")))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "uv lock"
+        :description "Update the uv lock file"
+        :category "Project"
+        :priority 60
+        :predicate (lambda () (executable-find "uv"))
+        :action (lambda ()
+                  (init-dwim--run-in-project "uv lock")))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "uv run…"
+        :description "Run a command you enter in the uv environment"
+        :category "Project"
+        :priority 66
+        :predicate (lambda () (executable-find "uv"))
+        :action (lambda ()
+                  (init-dwim--run-in-project
+                   (concat "uv run " (read-shell-command "uv run " "pytest")))))
+       actions))
+
+    ;; Poetry
+    (when (init-dwim-extra--project-has-file-p "poetry.lock")
+      (push
+       (init-dwim-make-action
+        :title "poetry install"
+        :description "Install the locked dependencies with Poetry"
+        :category "Project"
+        :priority 74
+        :predicate (lambda () (executable-find "poetry"))
+        :action (lambda ()
+                  (init-dwim--run-in-project "poetry install")))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "poetry run pytest"
+        :description "Run the test suite inside the Poetry environment"
+        :category "Project"
+        :priority 88
+        :predicate (lambda () (executable-find "poetry"))
+        :action (lambda ()
+                  (init-dwim--run-in-project "poetry run pytest")))
+       actions))
+
+    ;; Deno
+    (when-let ((tasks (alist-get 'tasks (init-dwim-extra--json-file-read "deno.json"))))
+      (dolist (cell tasks)
+        (let ((name (symbol-name (car cell))))
+          (push (init-dwim-extra--project-command-action
+                 "deno task"
+                 name
+                 (init-dwim-extra--task-priority name))
+                actions))))
+
+    ;; Composer
+    (when (init-dwim-extra--project-has-file-p "composer.json")
+      (push
+       (init-dwim-make-action
+        :title "composer install"
+        :description "Install PHP dependencies"
+        :category "Project"
+        :priority 67
+        :predicate (lambda () (executable-find "composer"))
+        :action (lambda ()
+                  (init-dwim--run-in-project "composer install")))
+       actions)
+
+      (dolist (cell (alist-get 'scripts (init-dwim-extra--json-file-read "composer.json")))
+        (let ((name (symbol-name (car cell))))
+          (unless (string-match-p "\\`\\(?:pre\\|post\\)-" name)
+            (push (init-dwim-extra--project-command-action
+                   "composer run-script"
+                   name
+                   (init-dwim-extra--task-priority name))
+                  actions)))))
+
+    ;; Terraform
+    (when (ignore-errors (directory-files root nil "\\.tf\\'"))
+      (dolist (spec '(("terraform validate" 84 "Check the configuration for errors")
+                      ("terraform plan" 78 "Preview the changes Terraform would make")
+                      ("terraform fmt -recursive" 80 "Format all Terraform files")
+                      ("terraform init" 70 "Initialize providers and modules")))
+        (let ((command (nth 0 spec)))
+          (push
+           (init-dwim-make-action
+            :title command
+            :description (nth 2 spec)
+            :category "Project"
+            :priority (nth 1 spec)
+            :predicate (lambda () (executable-find "terraform"))
+            :action (lambda ()
+                      (init-dwim--run-in-project command)))
+           actions))))
+
+    ;; Nix flake
+    (when (init-dwim-extra--project-has-file-p "flake.nix")
+      (dolist (spec '(("nix flake check" 84 "Evaluate and test the flake")
+                      ("nix build" 80 "Build the default flake output")
+                      ("nix flake update" 60 "Update the flake lock file")))
+        (let ((command (nth 0 spec)))
+          (push
+           (init-dwim-make-action
+            :title command
+            :description (nth 2 spec)
+            :category "Project"
+            :priority (nth 1 spec)
+            :predicate (lambda () (executable-find "nix"))
+            :action (lambda ()
+                      (init-dwim--run-in-project command)))
+           actions))))
 
     actions))
 
@@ -11360,6 +12809,200 @@ is retained for compatibility but returns nil."
       :predicate (lambda () (fboundp 'org-agenda-follow-mode))
       :action (lambda () (org-agenda-follow-mode))))))
 
+(defun init-dwim-org-link-provider ()
+  "Actions for the Org link, timestamp, checkbox or heading at point."
+  (when (derived-mode-p 'org-mode)
+    (let* ((ctx (ignore-errors (org-element-context)))
+           (type (and ctx (org-element-type ctx)))
+           (actions nil))
+      ;; Links
+      (when (eq type 'link)
+        (let* ((raw   (org-element-property :raw-link ctx))
+               (ltype (org-element-property :type ctx))
+               (beg   (org-element-property :begin ctx))
+               (end   (- (org-element-property :end ctx)
+                         (or (org-element-property :post-blank ctx) 0)))
+               (cb    (org-element-property :contents-begin ctx))
+               (ce    (org-element-property :contents-end ctx))
+               (desc  (and cb ce (buffer-substring-no-properties cb ce)))
+               (text  (buffer-substring-no-properties beg end)))
+          (push
+           (init-dwim-make-action
+            :title "Open link"
+            :description "Follow the Org link at point"
+            :category "OrgLink"
+            :priority 98
+            :action (lambda () (org-open-at-point)))
+           actions)
+
+          (when raw
+            (push
+             (init-dwim-make-action
+              :title "Copy link target"
+              :description "Copy the link target to the kill ring"
+              :category "OrgLink"
+              :priority 92
+              :action (lambda () (kill-new raw) (message "Copied: %s" raw)))
+             actions))
+
+          (when desc
+            (push
+             (init-dwim-make-action
+              :title "Copy link description"
+              :description "Copy the link's visible text to the kill ring"
+              :category "OrgLink"
+              :priority 80
+              :action (lambda () (kill-new desc) (message "Copied: %s" desc)))
+             actions))
+
+          (push
+           (init-dwim-make-action
+            :title "Edit link"
+            :description "Edit target and description"
+            :category "OrgLink"
+            :priority 85
+            :predicate (lambda () (fboundp 'org-insert-link))
+            :action (lambda () (call-interactively #'org-insert-link)))
+           actions)
+
+          (when (and raw (not (equal text raw)))
+            (push
+             (init-dwim-make-action
+              :title "Convert link to plain target"
+              :description "Replace the bracket link with its bare target"
+              :category "OrgLink"
+              :priority 70
+              :action (lambda () (init-dwim--replace-span beg end raw)))
+             actions))
+
+          (when cb
+            (push
+             (init-dwim-make-action
+              :title "Remove link (keep description)"
+              :description "Replace the link with its description text"
+              :category "OrgLink"
+              :priority 68
+              :action (lambda () (init-dwim--replace-span beg end desc)))
+             actions))
+
+          (when (member ltype '("http" "https"))
+            (push
+             (init-dwim-make-action
+              :title "Open link in EWW"
+              :description "Browse the link target inside Emacs"
+              :category "OrgLink"
+              :priority 60
+              :predicate (lambda () (fboundp 'eww))
+              :action (lambda () (eww raw)))
+             actions))))
+      ;; Timestamps
+      (when (eq type 'timestamp)
+        (let ((time (ignore-errors (org-timestamp-to-time ctx))))
+          (dolist (spec '(("Timestamp +1 day" 1 day 96 "Move the timestamp forward one day")
+                          ("Timestamp -1 day" -1 day 95 "Move the timestamp back one day")
+                          ("Timestamp +1 week" 7 day 90 "Move the timestamp forward one week")
+                          ("Timestamp -1 week" -7 day 89 "Move the timestamp back one week")))
+            (let ((n (nth 1 spec)) (unit (nth 2 spec)))
+              (push
+               (init-dwim-make-action
+                :title (nth 0 spec)
+                :description (nth 4 spec)
+                :category "OrgTime"
+                :priority (nth 3 spec)
+                :action (lambda () (org-timestamp-change n unit)))
+               actions)))
+
+          (push
+           (init-dwim-make-action
+            :title "Edit timestamp"
+            :description "Pick a new date with the calendar"
+            :category "OrgTime"
+            :priority 88
+            :action (lambda () (org-time-stamp nil)))
+           actions)
+
+          (when time
+            (let ((iso (format-time-string "%F" time)))
+              (push
+               (init-dwim-make-action
+                :title "Copy timestamp as ISO date"
+                :description "Copy the timestamp's date as YYYY-MM-DD"
+                :category "OrgTime"
+                :priority 70
+                :action (lambda () (kill-new iso) (message "Copied: %s" iso)))
+               actions)
+
+              (push
+               (init-dwim-make-action
+                :title "Show this day in agenda"
+                :description "Open the day view of the agenda for this date"
+                :category "OrgTime"
+                :priority 80
+                :predicate (lambda () (fboundp 'org-agenda-list))
+                :action (lambda () (org-agenda-list nil iso 'day)))
+               actions)
+
+              (unless (org-before-first-heading-p)
+                (push
+                 (init-dwim-make-action
+                  :title "Use date as SCHEDULED for heading"
+                  :description "Schedule the current heading on this date"
+                  :category "OrgTime"
+                  :priority 66
+                  :action (lambda () (org-schedule nil iso)))
+                 actions)
+
+                (push
+                 (init-dwim-make-action
+                  :title "Use date as DEADLINE for heading"
+                  :description "Set this date as the current heading's deadline"
+                  :category "OrgTime"
+                  :priority 65
+                  :action (lambda () (org-deadline nil iso)))
+                 actions))))))
+      ;; Checkbox items and headings: progress cookies
+      (let ((at-box (ignore-errors (org-at-item-checkbox-p)))
+            (at-head (ignore-errors (org-at-heading-p))))
+        (when (and (or at-box at-head) (not (org-before-first-heading-p)))
+          (if (init-dwim--org-heading-has-cookie-p)
+              (push
+               (init-dwim-make-action
+                :title "Remove progress cookie from heading"
+                :description "Remove the [/] or [%] cookie from the heading"
+                :category "OrgList"
+                :priority 60
+                :action #'init-dwim--org-remove-cookie)
+               actions)
+
+            (push
+             (init-dwim-make-action
+              :title "Add [/] progress cookie to heading"
+              :description "Track checkbox/subtask completion in the heading"
+              :category "OrgList"
+              :priority 62
+              :action #'init-dwim--org-add-cookie)
+             actions))
+
+          (push
+           (init-dwim-make-action
+            :title "Update checkbox and cookie counts"
+            :description "Recount checkboxes and update progress cookies"
+            :category "OrgList"
+            :priority 55
+            :action (lambda () (org-update-statistics-cookies 'all)))
+           actions))
+
+        (when at-box
+          (push
+           (init-dwim-make-action
+            :title "Insert checkbox item below"
+            :description "Add a new unchecked list item under this one"
+            :category "OrgList"
+            :priority 74
+            :action (lambda () (org-insert-item t)))
+           actions)))
+      actions)))
+
 ;;; ── Outline ──────────────────────────────────────────────────────────────
 
 (defun init-dwim-outline-provider ()
@@ -12545,6 +14188,7 @@ is retained for compatibility but returns nil."
         
         ;; Selection, point context, and editing objects.
         init-dwim-region-provider
+        init-dwim-clipboard-provider
         init-dwim-expand-region-provider
         init-dwim-rectangle-provider
         init-dwim-url-provider
@@ -12552,6 +14196,7 @@ is retained for compatibility but returns nil."
         init-dwim-file-path-provider
         init-dwim-symbol-provider
         init-dwim-number-provider
+        init-dwim-literal-provider
         init-dwim-register-provider
         init-dwim-narrow-provider
         init-dwim-smartparens-provider
@@ -12566,6 +14211,7 @@ is retained for compatibility but returns nil."
         init-dwim-org-table-provider
         init-dwim-org-agenda-provider
         init-dwim-org-clock-provider
+        init-dwim-org-link-provider
         init-dwim-text-provider
         init-dwim-markdown-provider
         init-dwim-markdown-table-provider
@@ -12597,8 +14243,12 @@ is retained for compatibility but returns nil."
         ;; Projects, version control, diffs, and tasks.
         init-dwim-project-provider
         init-dwim-project-task-provider
+        init-dwim-project-task-extra-provider
         init-dwim-vc-provider
         init-dwim-magit-provider
+        init-dwim-git-revision-provider
+        init-dwim-git-remote-provider
+        init-dwim-commit-message-provider
         init-dwim-git-gutter-provider
         init-dwim-smerge-provider
         init-dwim-diff-provider
@@ -12610,6 +14260,7 @@ is retained for compatibility but returns nil."
         init-dwim-programming-provider
         init-dwim-eglot-workspace-provider
         init-dwim-diagnostics-provider        ; includes flymake (merged)
+        init-dwim-diagnostic-at-point-provider
         init-dwim-dap-provider
         init-dwim-treesit-provider
         init-dwim-outline-provider
