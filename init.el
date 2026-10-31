@@ -476,6 +476,8 @@
 (require 'project nil t)
 (require 'json)
 (require 'color)
+(require 'compile)
+(require 'seq)
 
 (defgroup init-dwim nil
   "Context-aware Do What I Mean command."
@@ -2016,6 +2018,167 @@ Parsed by hand: `color-name-to-rgb' snaps to ANSI colors on TTY frames."
      :predicate (lambda () (executable-find executable))
      :action (lambda () (init-dwim--run-in-project command)))))
 
+(defun init-dwim--git-directory ()
+  "Return the git directory of the current project, or nil."
+  (when-let* ((root (init-dwim--local-project-root))
+              (dotgit (expand-file-name ".git" root)))
+    (cond
+     ((file-directory-p dotgit) dotgit)
+     ((file-regular-p dotgit)
+      (with-temp-buffer
+        (insert-file-contents dotgit nil 0 512)
+        (when (re-search-forward "^gitdir: \\(.+\\)$" nil t)
+          (expand-file-name (match-string 1) root)))))))
+
+(defun init-dwim--git-operation ()
+  "Return the in-progress git operation as a symbol, or nil.
+The result is one of `merge', `rebase', `cherry-pick' or `revert'."
+  (when-let ((dir (init-dwim--git-directory)))
+    (cond
+     ((file-exists-p (expand-file-name "MERGE_HEAD" dir)) 'merge)
+     ((or (file-directory-p (expand-file-name "rebase-merge" dir))
+          (file-directory-p (expand-file-name "rebase-apply" dir)))
+      'rebase)
+     ((file-exists-p (expand-file-name "CHERRY_PICK_HEAD" dir)) 'cherry-pick)
+     ((file-exists-p (expand-file-name "REVERT_HEAD" dir)) 'revert))))
+
+(defun init-dwim--unmerged-files ()
+  "Return the files with unresolved conflicts, relative to the git top level."
+  (when-let ((output (init-dwim--git-output "diff" "--name-only" "--diff-filter=U")))
+    (split-string output "\n" t)))
+
+(defun init-dwim--visit-conflicted-file (file)
+  "Visit FILE, relative to the git top level, at its first conflict marker."
+  (let ((top (or (init-dwim--git-output "rev-parse" "--show-toplevel")
+                 (init-dwim--project-root))))
+    (find-file (expand-file-name file top))
+    (goto-char (point-min))
+    (when (re-search-forward "^<<<<<<< " nil t)
+      (beginning-of-line))
+    (when (fboundp 'smerge-mode)
+      (smerge-mode 1))))
+
+(defvar init-dwim--project-command-history (make-hash-table :test 'equal)
+  "Commands run through `compile', keyed by project root, newest first.")
+
+(defun init-dwim--record-project-command (&optional _process)
+  "Remember the command of the compilation that is starting, per project."
+  (when-let* ((command (car-safe compilation-arguments))
+              ((stringp command))
+              (root (ignore-errors (init-dwim--local-project-root))))
+    (puthash root
+             (seq-take (cons command
+                             (delete command (gethash root init-dwim--project-command-history)))
+                       20)
+             init-dwim--project-command-history)))
+
+(add-hook 'compilation-start-hook #'init-dwim--record-project-command)
+
+(defvar init-dwim--closed-files nil
+  "List of (FILE . POINT) for recently killed file buffers, newest first.")
+
+(defun init-dwim--record-closed-file ()
+  "Remember the file and position of the buffer being killed."
+  (when-let* ((file buffer-file-name)
+              ((not (file-remote-p file)))
+              ((not (string-prefix-p (expand-file-name temporary-file-directory) file)))
+              ((not (string-match-p "/COMMIT_EDITMSG\\'" file))))
+    (setq init-dwim--closed-files
+          (seq-take (cons (cons file (point))
+                          (assoc-delete-all file init-dwim--closed-files))
+                    30))))
+
+(add-hook 'kill-buffer-hook #'init-dwim--record-closed-file)
+
+(defun init-dwim--reopenable-files ()
+  "Return recently closed (FILE . POINT) entries that exist and are not open."
+  (seq-filter (lambda (entry)
+                (and (file-exists-p (car entry))
+                     (not (get-file-buffer (car entry)))))
+              init-dwim--closed-files))
+
+(defun init-dwim--reopen-file (entry)
+  "Visit the file of ENTRY, a (FILE . POINT) cons, at its last position."
+  (find-file (car entry))
+  (goto-char (min (cdr entry) (point-max))))
+
+(defun init-dwim--grep-result-files ()
+  "Return the existing files that have matches in the current grep buffer."
+  (let (files)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^\\(?:\\./\\)?\\([^:\n]+\\):[0-9]+:" nil t)
+        (let ((file (expand-file-name (match-string 1) default-directory)))
+          (when (and (not (member file files)) (file-regular-p file))
+            (push file files)))))
+    (nreverse files)))
+
+(defun init-dwim--decode-jwt (token)
+  "Return the pretty-printed header and payload of the JWT TOKEN, or nil."
+  (when (string-match
+         "\\`\\([A-Za-z0-9_-]+\\)\\.\\([A-Za-z0-9_-]+\\)\\.[A-Za-z0-9_-]*\\'" token)
+    (mapconcat
+     (lambda (part)
+       (with-temp-buffer
+         (insert (decode-coding-string
+                  (base64-decode-string
+                   (concat part (make-string (mod (- 4 (mod (length part) 4)) 4) ?=))
+                   t)
+                  'utf-8))
+         (ignore-errors (json-pretty-print-buffer))
+         (string-trim (buffer-string))))
+     (list (match-string 1 token) (match-string 2 token))
+     "\n\n")))
+
+(defun init-dwim--diff-hunk-text ()
+  "Return the diff hunk around point, with its file header, or nil."
+  (save-excursion
+    (end-of-line)
+    (when (re-search-backward "^@@ " nil t)
+      (let ((beg (line-beginning-position))
+            (file (save-excursion
+                    (when (re-search-backward "^\\+\\+\\+ \\(.*\\)$" nil t)
+                      (match-string-no-properties 1)))))
+        (forward-line 1)
+        (let ((end (if (re-search-forward "^\\(?:@@ \\|diff \\)" nil t)
+                       (match-beginning 0)
+                     (point-max))))
+          (concat (when file (format "File: %s\n" file))
+                  (buffer-substring-no-properties beg end)))))))
+
+(defvar shr-width)
+(defvar shr-use-fonts)
+
+(defun init-dwim--fetch-url-text (url callback)
+  "Fetch URL asynchronously and call CALLBACK with its readable text."
+  (require 'shr)
+  (url-retrieve
+   url
+   (lambda (status callback)
+     (if (plist-get status :error)
+         (message "Could not fetch URL: %s" (cdr (plist-get status :error)))
+       (goto-char (point-min))
+       (when (looking-at "\\(?:HTTP/\\|Content-[Tt]ype:\\)")
+         (re-search-forward "\r?\n\r?\n" nil 'move))
+       (let* ((html (buffer-substring-no-properties (point) (point-max)))
+              (text (if (and (fboundp 'libxml-available-p) (libxml-available-p))
+                        (let ((shr-width 200)
+                              (shr-use-fonts nil))
+                          (with-temp-buffer
+                            (shr-insert-document
+                             (with-temp-buffer
+                               (insert html)
+                               (libxml-parse-html-region (point-min) (point-max))))
+                            (buffer-string)))
+                      (replace-regexp-in-string "<[^>]*>" " " html))))
+         (kill-buffer (current-buffer))
+         (funcall callback (string-trim text)))))
+   (list callback) t t))
+
+(defun init-dwim--date-string (days)
+  "Return the ISO date DAYS days from today."
+  (format-time-string "%F" (time-add (current-time) (* days 86400))))
+
 ;;;; Providers
 
 ;;; ── Region ────────────────────────────────────────────────────────────────
@@ -2375,6 +2538,227 @@ Parsed by hand: `color-name-to-rgb' snaps to ANSI colors on TTY frames."
         :action (lambda ()
                   (delete-region beg end)
                   (insert (upcase-initials text))))))))
+
+(defun init-dwim-region-extra-provider ()
+  "Additional actions for the active region."
+  (when (use-region-p)
+    (let* ((bounds (init-dwim--region-bounds))
+           (beg (car bounds))
+           (end (cdr bounds))
+           (text (init-dwim--region-string))
+           (range (init-dwim--line-range))
+           (clip (init-dwim--clipboard-string))
+           (actions nil))
+      (when (init-dwim--elisp-mode-p)
+        (push
+         (init-dwim-make-action
+          :title "Evaluate region as Elisp"
+          :description "Evaluate every form in the selected text"
+          :category "Region"
+          :priority 84
+          :action (lambda ()
+                    (eval-region beg end)
+                    (message "Evaluated region")))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Copy region with file location"
+        :description "Copy the text preceded by a path:line header, ready to share"
+        :category "Region"
+        :priority 74
+        :action (lambda ()
+                  (let* ((file (buffer-file-name))
+                         (root (init-dwim--project-root))
+                         (name (if (and file root)
+                                   (file-relative-name file root)
+                                 (buffer-name)))
+                         (header (if (= (car range) (cdr range))
+                                     (format "%s:%d" name (car range))
+                                   (format "%s:%d-%d" name (car range) (cdr range)))))
+                    (kill-new (concat header "\n" text))
+                    (message "Copied %s" header))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Sort lines numerically"
+        :description "Sort the lines by the first number on each line"
+        :category "Region"
+        :priority 59
+        :action (lambda () (sort-numeric-fields 1 beg end)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Join region lines"
+        :description "Replace line breaks with single spaces"
+        :category "Region"
+        :priority 58
+        :action (lambda ()
+                  (init-dwim--replace-span
+                   beg end
+                   (mapconcat #'identity (split-string text "[ \t]*\n[ \t]*" t) " "))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Convert lines to comma-separated list"
+        :description "Turn one item per line into a single comma-separated line"
+        :category "Region"
+        :priority 57
+        :action (lambda ()
+                  (init-dwim--replace-span
+                   beg end
+                   (string-join (split-string text "\n" t "[ \t]+") ", "))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Surround region with delimiters"
+        :description "Wrap the selected text in a pair of delimiters"
+        :category "Region"
+        :priority 56
+        :action (lambda ()
+                  (let* ((pair (completing-read
+                                "Surround with: "
+                                '("\"\"" "''" "()" "[]" "{}" "``" "<>") nil t)))
+                    (init-dwim--replace-span
+                     beg end
+                     (concat (substring pair 0 1) text (substring pair 1))))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Add prefix to each line"
+        :description "Insert a string at the start of every non-blank line"
+        :category "Region"
+        :priority 54
+        :action (lambda ()
+                  (init-dwim--replace-span
+                   beg end
+                   (init-dwim--prefix-lines text (read-string "Prefix: ")))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Add suffix to each line"
+        :description "Append a string to the end of every non-blank line"
+        :category "Region"
+        :priority 53
+        :action (lambda ()
+                  (let ((suffix (read-string "Suffix: ")))
+                    (init-dwim--replace-span
+                     beg end
+                     (mapconcat (lambda (line)
+                                  (if (string-empty-p line) line (concat line suffix)))
+                                (split-string text "\n") "\n")))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Shell-quote region"
+        :description "Escape the text so it is safe as a single shell argument"
+        :category "Region"
+        :priority 52
+        :action (lambda ()
+                  (init-dwim--replace-span beg end (shell-quote-argument text))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "JSON-escape region as string"
+        :description "Replace the text with a quoted, escaped JSON string"
+        :category "Region"
+        :priority 50
+        :action (lambda ()
+                  (init-dwim--replace-span beg end (json-encode-string text))))
+       actions)
+
+      (when (string-prefix-p "\"" (string-trim text))
+        (push
+         (init-dwim-make-action
+          :title "JSON-unescape region string"
+          :description "Replace a quoted JSON string with its unescaped contents"
+          :category "Region"
+          :priority 49
+          :action (lambda ()
+                    (init-dwim--replace-span
+                     beg end (json-parse-string (string-trim text)))))
+         actions))
+
+      (when (string-match-p
+             "\\`[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\'" (string-trim text))
+        (push
+         (init-dwim-make-action
+          :title "Decode JWT in region"
+          :description "Show the decoded header and payload of the token"
+          :category "Region"
+          :priority 48
+          :action (lambda ()
+                    (let ((decoded (or (ignore-errors (init-dwim--decode-jwt (string-trim text)))
+                                       (user-error "Not a decodable JWT"))))
+                      (with-current-buffer (get-buffer-create "*JWT*")
+                        (erase-buffer)
+                        (insert decoded "\n")
+                        (goto-char (point-min))
+                        (pop-to-buffer (current-buffer))))))
+         actions))
+
+      (when clip
+        (push
+         (init-dwim-make-action
+          :title "Diff region against clipboard"
+          :description "Show the differences between the selection and the kill ring head"
+          :category "Region"
+          :priority 46
+          :action (lambda ()
+                    (let ((old (generate-new-buffer "*region*"))
+                          (new (generate-new-buffer "*clipboard*")))
+                      (with-current-buffer old (insert text "\n"))
+                      (with-current-buffer new (insert clip "\n"))
+                      (unwind-protect
+                          (diff old new nil t)
+                        (kill-buffer old)
+                        (kill-buffer new)))))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Open region in new buffer"
+        :description "Copy the selected text into a fresh scratch buffer"
+        :category "Region"
+        :priority 40
+        :action (lambda ()
+                  (let ((buffer (generate-new-buffer "*region*")))
+                    (with-current-buffer buffer (insert text))
+                    (pop-to-buffer buffer))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "MD5 hash region"
+        :description "Show the MD5 digest of the text and copy it"
+        :category "Region"
+        :priority 31
+        :action (lambda ()
+                  (let ((hash (secure-hash 'md5 text)))
+                    (kill-new hash)
+                    (message "MD5: %s" hash))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "SHA-1 hash region"
+        :description "Show the SHA-1 digest of the text and copy it"
+        :category "Region"
+        :priority 31
+        :action (lambda ()
+                  (let ((hash (secure-hash 'sha1 text)))
+                    (kill-new hash)
+                    (message "SHA-1: %s" hash))))
+       actions)
+      actions)))
 
 (defun init-dwim-clipboard-provider ()
   "Actions that depend on what the clipboard contains."
@@ -3032,6 +3416,35 @@ Parsed by hand: `color-name-to-rgb' snaps to ANSI colors on TTY frames."
           (auto-save-mode 'toggle)
           (message "Auto-save %s"
                    (if buffer-auto-save-file-name "on" "off"))))))))
+
+(defun init-dwim-reopen-closed-file-provider ()
+  "Actions to visit recently closed files again."
+  (when-let* ((entries (init-dwim--reopenable-files)))
+    (let ((actions nil))
+      (push
+       (init-dwim-make-action
+        :title (format "Reopen %s" (file-name-nondirectory (car (car entries))))
+        :description "Visit the most recently closed file again, at its last position"
+        :category "History"
+        :priority 79
+        :action (lambda () (init-dwim--reopen-file (car entries))))
+       actions)
+
+      (when (cdr entries)
+        (push
+         (init-dwim-make-action
+          :title "Pick a recently closed file"
+          :description "Choose among the files closed during this session"
+          :category "History"
+          :priority 66
+          :action (lambda ()
+                    (let* ((names (mapcar (lambda (entry)
+                                            (cons (abbreviate-file-name (car entry)) entry))
+                                          entries))
+                           (choice (completing-read "Reopen: " names nil t)))
+                      (init-dwim--reopen-file (cdr (assoc choice names))))))
+         actions))
+      actions)))
 
 ;;; ── Symbol ────────────────────────────────────────────────────────────────
 
@@ -3775,6 +4188,111 @@ Parsed by hand: `color-name-to-rgb' snaps to ANSI colors on TTY frames."
       :priority 62
       :predicate (lambda () (fboundp 'eglot-shutdown))
       :action #'eglot-shutdown))))
+
+(defun init-dwim-eglot-extra-provider ()
+  "Additional Eglot actions: refactoring code actions, navigation and diagnostics."
+  (when (init-dwim-extra--eglot-managed-p)
+    (let (actions)
+      (push
+       (init-dwim-make-action
+        :title "LSP extract with code action"
+        :description "Ask the language server to extract the selection or expression"
+        :category "LSP"
+        :priority 87
+        :predicate (lambda () (commandp 'eglot-code-action-extract))
+        :action (lambda () (call-interactively #'eglot-code-action-extract)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP inline with code action"
+        :description "Ask the language server to inline the symbol at point"
+        :category "LSP"
+        :priority 86
+        :predicate (lambda () (commandp 'eglot-code-action-inline))
+        :action (lambda () (call-interactively #'eglot-code-action-inline)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP rewrite with code action"
+        :description "Ask the language server to rewrite the code at point"
+        :category "LSP"
+        :priority 85
+        :predicate (lambda () (commandp 'eglot-code-action-rewrite))
+        :action (lambda () (call-interactively #'eglot-code-action-rewrite)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP find implementation"
+        :description "Jump to the implementations of the symbol at point"
+        :category "LSP"
+        :priority 84
+        :predicate (lambda () (commandp 'eglot-find-implementation))
+        :action (lambda () (call-interactively #'eglot-find-implementation)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP find type definition"
+        :description "Jump to the definition of the type of the symbol at point"
+        :category "LSP"
+        :priority 83
+        :predicate (lambda () (commandp 'eglot-find-typeDefinition))
+        :action (lambda () (call-interactively #'eglot-find-typeDefinition)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP format buffer"
+        :description "Format the whole buffer with the language server"
+        :category "LSP"
+        :priority 79
+        :predicate (lambda () (commandp 'eglot-format-buffer))
+        :action (lambda () (call-interactively #'eglot-format-buffer)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP toggle inlay hints"
+        :description "Show or hide type and parameter hints"
+        :category "LSP"
+        :priority 66
+        :predicate (lambda () (commandp 'eglot-inlay-hints-mode))
+        :action (lambda () (call-interactively #'eglot-inlay-hints-mode)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP show events buffer"
+        :description "Open the protocol log of the language server"
+        :category "LSP"
+        :priority 56
+        :predicate (lambda () (commandp 'eglot-events-buffer))
+        :action (lambda () (call-interactively #'eglot-events-buffer)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP show server stderr"
+        :description "Open the error output of the language server"
+        :category "LSP"
+        :priority 55
+        :predicate (lambda () (commandp 'eglot-stderr-buffer))
+        :action (lambda () (call-interactively #'eglot-stderr-buffer)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "LSP show workspace configuration"
+        :description "Display the settings sent to the language server"
+        :category "LSP"
+        :priority 54
+        :predicate (lambda () (commandp 'eglot-show-workspace-configuration))
+        :action (lambda () (call-interactively #'eglot-show-workspace-configuration)))
+       actions)
+      actions)))
 
 ;;; ── Text / Markdown ───────────────────────────────────────────────────────
 
@@ -4685,6 +5203,78 @@ Parsed by hand: `color-name-to-rgb' snaps to ANSI colors on TTY frames."
          actions))
       actions)))
 
+(defun init-dwim-git-state-provider ()
+  "Actions for an in-progress merge, rebase, cherry-pick or revert."
+  (when-let* ((operation (init-dwim--git-operation)))
+    (let ((name (symbol-name operation))
+          (file (buffer-file-name))
+          (actions nil))
+      (push
+       (init-dwim-make-action
+        :title (format "Continue %s" name)
+        :description (format "Run `git %s --continue' once the conflicts are resolved" name)
+        :category "GitState"
+        :priority 98
+        :action (lambda ()
+                  (init-dwim--run-in-project (format "git %s --continue" name))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title (format "Abort %s" name)
+        :description (format "Run `git %s --abort' and restore the previous state" name)
+        :category "GitState"
+        :priority 70
+        :action (lambda ()
+                  (when (y-or-n-p (format "Abort the %s in progress? " name))
+                    (init-dwim--run-in-project (format "git %s --abort" name)))))
+       actions)
+
+      (when (eq operation 'rebase)
+        (push
+         (init-dwim-make-action
+          :title "Skip rebase commit"
+          :description "Drop the commit being applied and continue the rebase"
+          :category "GitState"
+          :priority 80
+          :action (lambda ()
+                    (init-dwim--run-in-project "git rebase --skip")))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Open a conflicted file"
+        :description "Visit a file with unresolved conflicts at its first marker"
+        :category "GitState"
+        :priority 92
+        :action (lambda ()
+                  (let ((files (or (init-dwim--unmerged-files)
+                                   (user-error "No unresolved conflicts"))))
+                    (init-dwim--visit-conflicted-file
+                     (if (cdr files)
+                         (completing-read "Conflicted file: " files nil t)
+                       (car files))))))
+       actions)
+
+      (when file
+        (push
+         (init-dwim-make-action
+          :title "Stage current file as resolved"
+          :description "Save the buffer and mark the file as resolved with git add"
+          :category "GitState"
+          :priority 90
+          :action (lambda ()
+                    (when (or (not (save-excursion
+                                     (goto-char (point-min))
+                                     (re-search-forward "^<<<<<<< " nil t)))
+                              (y-or-n-p "Conflict markers remain. Stage anyway? "))
+                      (save-buffer)
+                      (let ((default-directory (init-dwim--project-root)))
+                        (call-process "git" nil nil nil "add" "--" file))
+                      (message "Staged %s" (file-name-nondirectory file)))))
+         actions))
+      actions)))
+
 (defun init-dwim-commit-message-provider ()
   "Actions for git commit message buffers."
   (when (init-dwim--commit-message-buffer-p)
@@ -5041,6 +5631,43 @@ Parsed by hand: `color-name-to-rgb' snaps to ANSI colors on TTY frames."
                      ((fboundp 'project-remember-project)
                       (project-remember-project (project-current nil dir))
                       (message "Project remembered: %s" dir))))))))))
+
+(defun init-dwim-project-command-history-provider ()
+  "Actions that re-run commands previously run in the current project."
+  (when-let* ((root (init-dwim--local-project-root))
+              (commands (gethash root init-dwim--project-command-history)))
+    (let ((last (car commands))
+          (actions nil))
+      (push
+       (init-dwim-make-action
+        :title (format "Re-run `%s'" (truncate-string-to-width last 48 nil nil "…"))
+        :description "Run the most recent command of this project again"
+        :category "Project"
+        :priority 93
+        :action (lambda () (init-dwim--run-in-project last)))
+       actions)
+
+      (when (cdr commands)
+        (push
+         (init-dwim-make-action
+          :title "Choose from project command history"
+          :description "Pick one of the recent commands run in this project"
+          :category "Project"
+          :priority 72
+          :action (lambda ()
+                    (init-dwim--run-in-project
+                     (completing-read "Re-run: " commands nil nil))))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Copy last project command"
+        :description "Copy the most recent project command to the kill ring"
+        :category "Project"
+        :priority 48
+        :action (lambda () (kill-new last) (message "Copied: %s" last)))
+       actions)
+      actions)))
 
 ;;; ── Buffer (NEW) ──────────────────────────────────────────────────────────
 
@@ -7537,6 +8164,70 @@ Parsed by hand: `color-name-to-rgb' snaps to ANSI colors on TTY frames."
       :predicate (lambda () (fboundp 'xref-find-apropos))
       :action (lambda () (call-interactively #'xref-find-apropos))))))
 
+(defun init-dwim-xref-buffer-provider ()
+  "Actions for xref result buffers."
+  (when (derived-mode-p 'xref--xref-buffer-mode)
+    (let (actions)
+      (push
+       (init-dwim-make-action
+        :title "Go to xref"
+        :description "Jump to the location on this line and close the results"
+        :category "Xref"
+        :priority 100
+        :predicate (lambda () (commandp 'xref-goto-xref))
+        :action (lambda () (call-interactively #'xref-goto-xref)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Show xref and keep results"
+        :description "Display the location in another window"
+        :category "Xref"
+        :priority 92
+        :predicate (lambda () (commandp 'xref-show-location-at-point))
+        :action (lambda () (call-interactively #'xref-show-location-at-point)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Next xref"
+        :description "Move to the next result"
+        :category "Xref"
+        :priority 80
+        :predicate (lambda () (commandp 'xref-next-line))
+        :action (lambda () (call-interactively #'xref-next-line)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Previous xref"
+        :description "Move to the previous result"
+        :category "Xref"
+        :priority 78
+        :predicate (lambda () (commandp 'xref-prev-line))
+        :action (lambda () (call-interactively #'xref-prev-line)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Query-replace in xref results"
+        :description "Replace a regexp in all the files listed here"
+        :category "Xref"
+        :priority 74
+        :predicate (lambda () (commandp 'xref-query-replace-in-results))
+        :action (lambda () (call-interactively #'xref-query-replace-in-results)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Close xref results"
+        :description "Bury the results buffer and close its window"
+        :category "Xref"
+        :priority 60
+        :action (lambda () (quit-window)))
+       actions)
+      actions)))
+
 ;;; ── Diagnostics (NEW) ─────────────────────────────────────────────────────
 
 (defun init-dwim-diagnostics-provider ()
@@ -8602,6 +9293,108 @@ is retained for compatibility but returns nil."
                   (message "Time: %.6fs  GC runs: %d  GC time: %.6fs"
                            (car result) (cadr result) (caddr result))))))))
 
+(defun init-dwim-backtrace-provider ()
+  "Actions for Emacs Lisp backtrace and debugger buffers."
+  (when (derived-mode-p 'backtrace-mode 'debugger-mode)
+    (let ((debugging (derived-mode-p 'debugger-mode))
+          (actions nil))
+      (when debugging
+        (push
+         (init-dwim-make-action
+          :title "Continue execution"
+          :description "Resume the program after this stop"
+          :category "Backtrace"
+          :priority 100
+          :predicate (lambda () (commandp 'debugger-continue))
+          :action (lambda () (call-interactively #'debugger-continue)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Step through"
+          :description "Step into the next function call or form"
+          :category "Backtrace"
+          :priority 95
+          :predicate (lambda () (commandp 'debugger-step-through))
+          :action (lambda () (call-interactively #'debugger-step-through)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Evaluate expression in frame"
+          :description "Evaluate an expression in the context of the current frame"
+          :category "Backtrace"
+          :priority 88
+          :predicate (lambda () (commandp 'debugger-eval-expression))
+          :action (lambda () (call-interactively #'debugger-eval-expression)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Quit to top level"
+          :description "Abort the interrupted command and return to the top level"
+          :category "Backtrace"
+          :priority 60
+          :action (lambda () (top-level)))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Jump to frame source"
+        :description "Visit the source of the function in the frame at point"
+        :category "Backtrace"
+        :priority 92
+        :predicate (lambda () (commandp 'backtrace-goto-source))
+        :action (lambda () (call-interactively #'backtrace-goto-source)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Toggle local variables"
+        :description "Show or hide local variables for the frame at point"
+        :category "Backtrace"
+        :priority 70
+        :predicate (lambda () (commandp 'backtrace-toggle-locals))
+        :action (lambda () (call-interactively #'backtrace-toggle-locals)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Expand abbreviated forms"
+        :description "Show the full text of truncated arguments"
+        :category "Backtrace"
+        :priority 66
+        :predicate (lambda () (commandp 'backtrace-expand-ellipses))
+        :action (lambda () (call-interactively #'backtrace-expand-ellipses)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Copy backtrace"
+        :description "Copy the whole backtrace to the kill ring"
+        :category "Backtrace"
+        :priority 80
+        :action (lambda ()
+                  (kill-new (buffer-substring-no-properties (point-min) (point-max)))
+                  (message "Backtrace copied")))
+       actions)
+
+      (when (init-dwim--gptel-available-p)
+        (push
+         (init-dwim-make-action
+          :title "Ask AI to explain backtrace"
+          :description "Ask the AI for the root cause and the most likely fix"
+          :category "Backtrace"
+          :priority 74
+          :action (lambda ()
+                    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+                      (init-dwim--gptel-request-to-buffer
+                       init-dwim-ai-system-prompt
+                       (format "Explain this Emacs Lisp backtrace: the root cause and the most likely fix.\n\n%s"
+                               (substring text 0 (min 8000 (length text))))))))
+         actions))
+      actions)))
+
 ;;; ── REST / HTTP client ────────────────────────────────────────────────────
 
 (defun init-dwim-restclient-provider ()
@@ -9662,6 +10455,238 @@ is retained for compatibility but returns nil."
               (let ((sym (intern-soft (init-dwim--symbol-string))))
                 (when sym
                   (describe-package sym)))))))
+
+(defun init-dwim-package-menu-provider ()
+  "Actions for the `list-packages' buffer."
+  (when (derived-mode-p 'package-menu-mode)
+    (let (actions)
+      (push
+       (init-dwim-make-action
+        :title "Execute marked package actions"
+        :description "Install, upgrade or delete the packages that are marked"
+        :category "PackageMenu"
+        :priority 96
+        :predicate (lambda () (commandp 'package-menu-execute))
+        :action (lambda () (call-interactively #'package-menu-execute)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Mark upgradable packages"
+        :description "Mark every package that has a newer version available"
+        :category "PackageMenu"
+        :priority 95
+        :predicate (lambda () (commandp 'package-menu-mark-upgrades))
+        :action (lambda () (call-interactively #'package-menu-mark-upgrades)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Describe package"
+        :description "Show the description of the package at point"
+        :category "PackageMenu"
+        :priority 85
+        :predicate (lambda () (commandp 'package-menu-describe-package))
+        :action (lambda () (call-interactively #'package-menu-describe-package)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Mark package for installation"
+        :description "Mark the package at point to be installed"
+        :category "PackageMenu"
+        :priority 80
+        :predicate (lambda () (commandp 'package-menu-mark-install))
+        :action (lambda () (call-interactively #'package-menu-mark-install)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Mark package for deletion"
+        :description "Mark the package at point to be deleted"
+        :category "PackageMenu"
+        :priority 78
+        :predicate (lambda () (commandp 'package-menu-mark-delete))
+        :action (lambda () (call-interactively #'package-menu-mark-delete)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Unmark package"
+        :description "Remove the mark from the package at point"
+        :category "PackageMenu"
+        :priority 70
+        :predicate (lambda () (commandp 'package-menu-mark-unmark))
+        :action (lambda () (call-interactively #'package-menu-mark-unmark)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Refresh package list"
+        :description "Fetch the package archives again and redraw the list"
+        :category "PackageMenu"
+        :priority 72
+        :predicate (lambda () (commandp 'package-menu-refresh))
+        :action (lambda () (call-interactively #'package-menu-refresh)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Filter packages by status"
+        :description "Show only installed, available, upgradable or other packages"
+        :category "PackageMenu"
+        :priority 68
+        :predicate (lambda () (commandp 'package-menu-filter-by-status))
+        :action (lambda () (call-interactively #'package-menu-filter-by-status)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Filter packages by name"
+        :description "Show only packages whose name matches a regexp"
+        :category "PackageMenu"
+        :priority 67
+        :predicate (lambda () (commandp 'package-menu-filter-by-name))
+        :action (lambda () (call-interactively #'package-menu-filter-by-name)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Filter packages by keyword"
+        :description "Show only packages that have a given keyword"
+        :category "PackageMenu"
+        :priority 66
+        :predicate (lambda () (commandp 'package-menu-filter-by-keyword))
+        :action (lambda () (call-interactively #'package-menu-filter-by-keyword)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Clear package filter"
+        :description "Show all packages again"
+        :category "PackageMenu"
+        :priority 65
+        :predicate (lambda () (commandp 'package-menu-clear-filter))
+        :action (lambda () (call-interactively #'package-menu-clear-filter)))
+       actions)
+      actions)))
+
+;;; ── VC directory ────────────────────────────────────────────────────────────
+
+(defun init-dwim-vc-dir-provider ()
+  "Actions for `vc-dir' buffers."
+  (when (derived-mode-p 'vc-dir-mode)
+    (let (actions)
+      (push
+       (init-dwim-make-action
+        :title "Commit marked files"
+        :description "Check in the marked files, or the file at point"
+        :category "VCDir"
+        :priority 95
+        :predicate (lambda () (commandp 'vc-next-action))
+        :action (lambda () (call-interactively #'vc-next-action)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Open file at point"
+        :description "Visit the file on this line"
+        :category "VCDir"
+        :priority 92
+        :predicate (lambda () (commandp 'vc-dir-find-file))
+        :action (lambda () (call-interactively #'vc-dir-find-file)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Mark file"
+        :description "Mark the file at point for the next operation"
+        :category "VCDir"
+        :priority 90
+        :predicate (lambda () (commandp 'vc-dir-mark))
+        :action (lambda () (call-interactively #'vc-dir-mark)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Show diff of file"
+        :description "Show uncommitted changes of the file at point"
+        :category "VCDir"
+        :priority 88
+        :predicate (lambda () (commandp 'vc-diff))
+        :action (lambda () (call-interactively #'vc-diff)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Mark all files"
+        :description "Mark every file in the listing"
+        :category "VCDir"
+        :priority 82
+        :predicate (lambda () (commandp 'vc-dir-mark-all-files))
+        :action (lambda () (call-interactively #'vc-dir-mark-all-files)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Unmark all files"
+        :description "Remove all marks"
+        :category "VCDir"
+        :priority 80
+        :predicate (lambda () (commandp 'vc-dir-unmark-all-files))
+        :action (lambda () (call-interactively #'vc-dir-unmark-all-files)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Refresh status"
+        :description "Recompute the version control state of the files"
+        :category "VCDir"
+        :priority 75
+        :predicate (lambda () (commandp 'vc-dir-refresh))
+        :action (lambda () (call-interactively #'vc-dir-refresh)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Revert file changes"
+        :description "Discard uncommitted changes of the file at point"
+        :category "VCDir"
+        :priority 70
+        :predicate (lambda () (commandp 'vc-revert))
+        :action (lambda () (call-interactively #'vc-revert)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Show log of file"
+        :description "Show the revision history of the file at point"
+        :category "VCDir"
+        :priority 66
+        :predicate (lambda () (commandp 'vc-print-log))
+        :action (lambda () (call-interactively #'vc-print-log)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Hide up-to-date files"
+        :description "Remove unchanged files from the listing"
+        :category "VCDir"
+        :priority 65
+        :predicate (lambda () (commandp 'vc-dir-hide-up-to-date))
+        :action (lambda () (call-interactively #'vc-dir-hide-up-to-date)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Ignore file"
+        :description "Add the file at point to the ignore list"
+        :category "VCDir"
+        :priority 55
+        :predicate (lambda () (commandp 'vc-dir-ignore))
+        :action (lambda () (call-interactively #'vc-dir-ignore)))
+       actions)
+      actions)))
 
 ;;; Embark DWIM provider
 
@@ -12809,6 +13834,141 @@ is retained for compatibility but returns nil."
       :predicate (lambda () (fboundp 'org-agenda-follow-mode))
       :action (lambda () (org-agenda-follow-mode))))))
 
+(defun init-dwim-org-agenda-extra-provider ()
+  "Additional actions for Org agenda buffers: quick rescheduling and views."
+  (when (derived-mode-p 'org-agenda-mode)
+    (let (actions)
+      (push
+       (init-dwim-make-action
+        :title "Schedule for today"
+        :description "Set the scheduled date of the entry to today"
+        :category "OrgAgenda"
+        :priority 87
+        :predicate (lambda () (fboundp 'org-agenda-schedule))
+        :action (lambda () (org-agenda-schedule nil (init-dwim--date-string 0))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Schedule for tomorrow"
+        :description "Set the scheduled date of the entry to tomorrow"
+        :category "OrgAgenda"
+        :priority 86
+        :predicate (lambda () (fboundp 'org-agenda-schedule))
+        :action (lambda () (org-agenda-schedule nil (init-dwim--date-string 1))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Schedule for next week"
+        :description "Set the scheduled date of the entry to seven days from today"
+        :category "OrgAgenda"
+        :priority 84
+        :predicate (lambda () (fboundp 'org-agenda-schedule))
+        :action (lambda () (org-agenda-schedule nil (init-dwim--date-string 7))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Postpone entry one day"
+        :description "Move the timestamp of the entry one day later"
+        :category "OrgAgenda"
+        :priority 83
+        :predicate (lambda () (fboundp 'org-agenda-date-later))
+        :action (lambda () (org-agenda-date-later 1)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Move entry one day earlier"
+        :description "Move the timestamp of the entry one day earlier"
+        :category "OrgAgenda"
+        :priority 82
+        :predicate (lambda () (fboundp 'org-agenda-date-earlier))
+        :action (lambda () (org-agenda-date-earlier 1)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Set entry priority"
+        :description "Raise, lower or set the priority of the entry"
+        :category "OrgAgenda"
+        :priority 79
+        :predicate (lambda () (commandp 'org-agenda-priority))
+        :action (lambda () (call-interactively #'org-agenda-priority)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Set entry tags"
+        :description "Edit the tags of the entry"
+        :category "OrgAgenda"
+        :priority 78
+        :predicate (lambda () (commandp 'org-agenda-set-tags))
+        :action (lambda () (call-interactively #'org-agenda-set-tags)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Go to today"
+        :description "Move point to the current day in the agenda"
+        :category "OrgAgenda"
+        :priority 72
+        :predicate (lambda () (commandp 'org-agenda-goto-today))
+        :action (lambda () (call-interactively #'org-agenda-goto-today)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Show day view"
+        :description "Switch the agenda to a single day"
+        :category "OrgAgenda"
+        :priority 67
+        :predicate (lambda () (commandp 'org-agenda-day-view))
+        :action (lambda () (call-interactively #'org-agenda-day-view)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Show week view"
+        :description "Switch the agenda to a week"
+        :category "OrgAgenda"
+        :priority 66
+        :predicate (lambda () (commandp 'org-agenda-week-view))
+        :action (lambda () (call-interactively #'org-agenda-week-view)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Show month view"
+        :description "Switch the agenda to a month"
+        :category "OrgAgenda"
+        :priority 65
+        :predicate (lambda () (commandp 'org-agenda-month-view))
+        :action (lambda () (call-interactively #'org-agenda-month-view)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Toggle log mode"
+        :description "Show or hide closed and clocked entries"
+        :category "OrgAgenda"
+        :priority 62
+        :predicate (lambda () (commandp 'org-agenda-log-mode))
+        :action (lambda () (call-interactively #'org-agenda-log-mode)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Capture from agenda"
+        :description "Create a new entry dated for the day at point"
+        :category "OrgAgenda"
+        :priority 61
+        :predicate (lambda () (commandp 'org-agenda-capture))
+        :action (lambda () (call-interactively #'org-agenda-capture)))
+       actions)
+      actions)))
+
 (defun init-dwim-org-link-provider ()
   "Actions for the Org link, timestamp, checkbox or heading at point."
   (when (derived-mode-p 'org-mode)
@@ -13212,6 +14372,35 @@ is retained for compatibility but returns nil."
       :predicate (lambda () (fboundp 'occur-mode-display-occurrence))
       :action (lambda ()
                 (occur (read-regexp "Export occurrences of: ")))))))
+
+(defun init-dwim-grep-results-provider ()
+  "Actions for grep result buffers."
+  (when (derived-mode-p 'grep-mode)
+    (list
+     (init-dwim-make-action
+      :title "Open all matched files"
+      :description "Visit every file that has a match, without switching to them"
+      :category "Grep"
+      :priority 74
+      :action (lambda ()
+                (let ((files (or (init-dwim--grep-result-files)
+                                 (user-error "No matched files found"))))
+                  (when (or (<= (length files) 20)
+                            (y-or-n-p (format "Open %d files? " (length files))))
+                    (dolist (file files)
+                      (find-file-noselect file))
+                    (message "Opened %d files" (length files))))))
+
+     (init-dwim-make-action
+      :title "Copy matched file names"
+      :description "Copy the unique file names of all matches to the kill ring"
+      :category "Grep"
+      :priority 72
+      :action (lambda ()
+                (let ((files (or (init-dwim--grep-result-files)
+                                 (user-error "No matched files found"))))
+                  (kill-new (mapconcat #'identity files "\n"))
+                  (message "Copied %d file names" (length files))))))))
 
 ;;; ── Corfu / completion ───────────────────────────────────────────────────
 
@@ -13955,6 +15144,113 @@ is retained for compatibility but returns nil."
       ;; Return the collected actions
       (nreverse actions))))
 
+(defun init-dwim-gptel-extra-provider ()
+  "Additional AI actions for compilation output, diffs, regexps and web pages."
+  (when (init-dwim--gptel-available-p)
+    (let ((url (init-dwim--url-at-point))
+          (actions nil))
+      (when (init-dwim--compile-buffer-p)
+        (push
+         (init-dwim-make-action
+          :title "explain compilation error"
+          :description "Ask the AI to explain the failure at the end of this output"
+          :category "AI"
+          :priority 84
+          :action (lambda ()
+                    (let ((log (buffer-substring-no-properties
+                                (save-excursion
+                                  (goto-char (point-max))
+                                  (forward-line -80)
+                                  (point))
+                                (point-max))))
+                      (init-dwim--gptel-request-to-buffer
+                       init-dwim-ai-system-prompt
+                       (format "This is the output of a command run in project %s. Explain the root cause of the failure and the most likely fix.\n\n%s"
+                               (file-name-nondirectory
+                                (directory-file-name (init-dwim--project-root)))
+                               log)))))
+         actions))
+
+      (when (derived-mode-p 'diff-mode 'magit-diff-mode 'magit-revision-mode)
+        (push
+         (init-dwim-make-action
+          :title "review diff hunk at point"
+          :description "Ask the AI to review the hunk around point"
+          :category "AI"
+          :priority 80
+          :action (lambda ()
+                    (let ((hunk (or (init-dwim--diff-hunk-text)
+                                    (user-error "Point is not inside a diff hunk"))))
+                      (init-dwim--gptel-request-to-buffer
+                       init-dwim-ai-system-prompt
+                       (format "Review this diff hunk. Point out bugs, risks and unclear changes, briefly.\n\n%s"
+                               hunk)))))
+         actions))
+
+      (when url
+        (push
+         (init-dwim-make-action
+          :title "summarize URL at point"
+          :description "Fetch the page and ask the AI for a short summary"
+          :category "AI"
+          :priority 62
+          :action (lambda ()
+                    (message "Fetching %s ..." url)
+                    (init-dwim--fetch-url-text
+                     url
+                     (lambda (text)
+                       (init-dwim--gptel-request-to-buffer
+                        init-dwim-ai-system-prompt
+                        (format "Summarize this web page in five short bullet points.\n\nURL: %s\n\n%s"
+                                url
+                                (substring text 0 (min 12000 (length text)))))))))
+         actions))
+
+      (when (use-region-p)
+        (push
+         (init-dwim-make-action
+          :title "port selection to another language"
+          :description "Ask the AI to translate the selected code to another language"
+          :category "AI"
+          :priority 59
+          :action (lambda ()
+                    (let ((language (read-string "Port to which language? "))
+                          (code (init-dwim--region-string)))
+                      (init-dwim--gptel-request-to-buffer
+                       init-dwim-ai-system-prompt
+                       (format "Port this %s code to %s, keeping behaviour identical and idiomatic. Output the code first, then notes on differences.\n\n%s"
+                               major-mode language code)))))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "write regexp from description"
+        :description "Describe a pattern in words and get an Emacs regexp for it"
+        :category "AI"
+        :priority 58
+        :action (lambda ()
+                  (let ((description (read-string "What should the regexp match? ")))
+                    (init-dwim--gptel-request-to-buffer
+                     init-dwim-ai-system-prompt
+                     (format "Write an Emacs Lisp regexp, as it would appear inside a Lisp string with escaped backslashes, that matches: %s\nGive the regexp first, then two short matching and two non-matching examples."
+                             description)))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "write shell command from description"
+        :description "Describe a task in words and get a shell command for it"
+        :category "AI"
+        :priority 57
+        :action (lambda ()
+                  (let ((description (read-string "What should the command do? ")))
+                    (init-dwim--gptel-request-to-buffer
+                     init-dwim-ai-system-prompt
+                     (format "Write a POSIX shell command that does the following: %s\nGive the command first, then one sentence on what each part does and any risks."
+                             description)))))
+       actions)
+      actions)))
+
 (defun init-dwim-editing-builtins-provider ()
   "Return editing actions backed purely by built-in Emacs commands."
   (list
@@ -14188,6 +15484,7 @@ is retained for compatibility but returns nil."
         
         ;; Selection, point context, and editing objects.
         init-dwim-region-provider
+        init-dwim-region-extra-provider
         init-dwim-clipboard-provider
         init-dwim-expand-region-provider
         init-dwim-rectangle-provider
@@ -14210,6 +15507,7 @@ is retained for compatibility but returns nil."
         init-dwim-org-provider
         init-dwim-org-table-provider
         init-dwim-org-agenda-provider
+        init-dwim-org-agenda-extra-provider
         init-dwim-org-clock-provider
         init-dwim-org-link-provider
         init-dwim-text-provider
@@ -14224,6 +15522,7 @@ is retained for compatibility but returns nil."
 
         ;; Files, buffers, windows, tabs, and sessions.
         init-dwim-buffer-provider
+        init-dwim-reopen-closed-file-provider
         init-dwim-ibuffer-provider
         init-dwim-window-provider
         init-dwim-tab-bar-provider
@@ -14244,10 +15543,13 @@ is retained for compatibility but returns nil."
         init-dwim-project-provider
         init-dwim-project-task-provider
         init-dwim-project-task-extra-provider
+        init-dwim-project-command-history-provider
         init-dwim-vc-provider
+        init-dwim-vc-dir-provider
         init-dwim-magit-provider
         init-dwim-git-revision-provider
         init-dwim-git-remote-provider
+        init-dwim-git-state-provider
         init-dwim-commit-message-provider
         init-dwim-git-gutter-provider
         init-dwim-smerge-provider
@@ -14255,17 +15557,21 @@ is retained for compatibility but returns nil."
         init-dwim-ediff-provider
         init-dwim-launch-ediff-provider
         init-dwim-wgrep-provider
+        init-dwim-grep-results-provider
 
         ;; Programming, diagnostics, languages, and structured data.
         init-dwim-programming-provider
         init-dwim-eglot-workspace-provider
+        init-dwim-eglot-extra-provider
         init-dwim-diagnostics-provider        ; includes flymake (merged)
         init-dwim-diagnostic-at-point-provider
         init-dwim-dap-provider
         init-dwim-treesit-provider
         init-dwim-outline-provider
         init-dwim-xref-provider
+        init-dwim-xref-buffer-provider
         init-dwim-elisp-provider
+        init-dwim-backtrace-provider
         init-dwim-python-provider
         init-dwim-clojure-provider
         init-dwim-common-lisp-provider
@@ -14296,12 +15602,14 @@ is retained for compatibility but returns nil."
         
         ;; AI integrations.
         init-dwim-gptel-provider
+        init-dwim-gptel-extra-provider
 
         ;; Emacs meta/help/package operations.
         init-dwim-help-provider
         init-dwim-evil-provider
         init-dwim-macro-provider
         init-dwim-package-provider
+        init-dwim-package-menu-provider
         init-dwim-emacs-provider))
 
 (provide 'init-dwim)
