@@ -2179,6 +2179,107 @@ The result is one of `merge', `rebase', `cherry-pick' or `revert'."
   "Return the ISO date DAYS days from today."
   (format-time-string "%F" (time-add (current-time) (* days 86400))))
 
+(defun init-dwim--file-sha256 (file)
+  "Return the SHA-256 digest of FILE, or nil when it is larger than 100 MB."
+  (when (<= (file-attribute-size (file-attributes file)) (* 100 1024 1024))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert-file-contents-literally file)
+      (secure-hash 'sha256 (current-buffer)))))
+
+(defun init-dwim--decimal-at-point (&optional allow-float)
+  "Return (BEG END TEXT) for the decimal number at point, or nil.
+A leading minus is part of the number unless it follows a word character or
+a closing bracket, where it is a subtraction.  Parts of floats, versions and
+prefixed literals such as 0xFF are ignored.  With ALLOW-FLOAT, accept a
+fractional part."
+  (when-let ((m (init-dwim--match-at-point
+                 (if allow-float
+                     "-?\\b[0-9]+\\(?:\\.[0-9]+\\)?\\b"
+                   "-?\\b[0-9]+\\b"))))
+    (let ((beg (nth 0 m)) (end (nth 1 m)) (text (nth 2 m)))
+      (when (and (string-prefix-p "-" text)
+                 (> beg (point-min))
+                 (string-match-p "[[:alnum:])]" (string (char-before beg))))
+        (setq beg (1+ beg)
+              text (substring text 1)))
+      (unless (or (save-excursion (goto-char end) (looking-at-p "\\.[0-9]"))
+                  (save-excursion
+                    (goto-char beg)
+                    (looking-back "[0-9]\\." (max (point-min) (- beg 2)))))
+        (list beg end text)))))
+
+(defun init-dwim--integer-to-binary (n)
+  "Return the binary digits of the integer N, with a leading minus when negative."
+  (if (zerop n)
+      "0"
+    (let ((digits "") (m (abs n)))
+      (while (> m 0)
+        (setq digits (concat (number-to-string (% m 2)) digits)
+              m (/ m 2)))
+      (if (< n 0) (concat "-" digits) digits))))
+
+(defun init-dwim--dockerfile-buffer-p ()
+  "Return non-nil when the current buffer visits a Dockerfile."
+  (when-let ((file buffer-file-name))
+    (string-match-p
+     "\\`\\(?:Dockerfile\\|Containerfile\\)\\(?:\\..+\\)?\\'\\|\\.[Dd]ockerfile\\'"
+     (file-name-nondirectory file))))
+
+(defun init-dwim-extra--parse-compose-services ()
+  "Return service names (two-space indented keys under `services:')."
+  (let (names)
+    (when (re-search-forward "^services:[ \t]*$" nil t)
+      (forward-line 1)
+      (while (and (not (eobp))
+                  (looking-at "\\(?:[ \t]+.*\\|[ \t]*#.*\\|[ \t]*\\)$"))
+        (when (looking-at "  \\([A-Za-z0-9_.-]+\\):")
+          (push (match-string 1) names))
+        (forward-line 1)))
+    (seq-take (nreverse names) 12)))
+
+(defun init-dwim--url-without-tracking (url)
+  "Return URL without common tracking query parameters."
+  (let* ((hash (string-match "#" url))
+         (fragment (and hash (substring url hash)))
+         (base (if hash (substring url 0 hash) url))
+         (query (string-match "\\?" base)))
+    (if (not query)
+        url
+      (let ((kept (seq-remove
+                   (lambda (param)
+                     (string-match-p
+                      "\\`\\(?:utm_[A-Za-z0-9_]+\\|fbclid\\|gclid\\|dclid\\|msclkid\\|mc_eid\\|mc_cid\\|igshid\\|yclid\\|_hsenc\\|_hsmi\\)\\(?:=\\|\\'\\)"
+                      param))
+                   (split-string (substring base (1+ query)) "&" t))))
+        (concat (substring base 0 query)
+                (when kept (concat "?" (string-join kept "&")))
+                fragment)))))
+
+(defun init-dwim--recent-directories ()
+  "Return the distinct local directories of the recently visited files."
+  (delete-dups
+   (delq nil
+         (mapcar (lambda (file)
+                   (unless (file-remote-p file)
+                     (file-name-directory file)))
+                 (seq-take (bound-and-true-p recentf-list) 200)))))
+
+(defun init-dwim--treesit-named-node-at-point ()
+  "Return the named tree-sitter node at point, or nil."
+  (treesit-node-at (point) nil t))
+
+(defun init-dwim--swap-spans (beg1 end1 beg2 end2)
+  "Swap the text of two spans, the first lying entirely before the second."
+  (let ((text1 (buffer-substring beg1 end1))
+        (text2 (buffer-substring beg2 end2)))
+    (goto-char beg2)
+    (delete-region beg2 end2)
+    (insert text1)
+    (goto-char beg1)
+    (delete-region beg1 end1)
+    (insert text2)))
+
 ;;;; Providers
 
 ;;; ── Region ────────────────────────────────────────────────────────────────
@@ -3083,6 +3184,87 @@ The result is one of `merge', `rebase', `cherry-pick' or `revert'."
       :priority 40
       :predicate #'init-dwim--project-detected-p
       :action (lambda () (init-dwim--project-search url))))))
+
+(defun init-dwim-url-extra-provider ()
+  "Additional URL actions: curl, REST client, status check and tracking removal."
+  (let ((url (init-dwim--url-at-point))
+        (span (init-dwim--match-at-point "https?://[^ \t\n<>\"')]+"))
+        (actions nil))
+    (when url
+      (push
+       (init-dwim-make-action
+        :title "Copy as curl command"
+        :description "Copy a curl command that fetches this URL"
+        :category "URL"
+        :priority 58
+        :action (lambda ()
+                  (let ((command (format "curl -sSL '%s'"
+                                         (replace-regexp-in-string "'" "'\\\\''" url))))
+                    (kill-new command)
+                    (message "Copied: %s" command))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Open in REST client"
+        :description "Add a GET request for this URL to the REST client buffer"
+        :category "URL"
+        :priority 56
+        :predicate (lambda () (fboundp 'restclient-mode))
+        :action (lambda ()
+                  (with-current-buffer (get-buffer-create "*http requests*")
+                    (restclient-mode)
+                    (goto-char (point-max))
+                    (unless (bobp) (insert "\n#\n"))
+                    (insert "GET " url "\n")
+                    (pop-to-buffer (current-buffer)))))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Check HTTP status"
+        :description "Request the URL in the background and report the status code"
+        :category "URL"
+        :priority 54
+        :predicate (lambda () (executable-find "curl"))
+        :action (lambda ()
+                  (let ((output (generate-new-buffer " *http status*")))
+                    (message "Checking %s ..." url)
+                    (make-process
+                     :name "init-dwim-http-status"
+                     :buffer output
+                     :command (list "curl" "-sS" "-L" "-m" "15" "-o" "/dev/null"
+                                    "-w" "%{http_code} %{url_effective}" url)
+                     :sentinel (lambda (process _event)
+                                 (when (memq (process-status process) '(exit signal))
+                                   (message "%s -> %s" url
+                                            (string-trim (with-current-buffer output
+                                                           (buffer-string))))
+                                   (kill-buffer output)))))))
+       actions))
+
+    (when span
+      (let ((beg (nth 0 span)) (end (nth 1 span)) (text (nth 2 span)))
+        (let ((clean (init-dwim--url-without-tracking text)))
+          (unless (equal clean text)
+            (push
+             (init-dwim-make-action
+              :title "Remove tracking parameters from URL"
+              :description "Strip utm_*, fbclid, gclid and similar parameters in place"
+              :category "URL"
+              :priority 74
+              :action (lambda () (init-dwim--replace-span beg end clean)))
+             actions)
+
+            (push
+             (init-dwim-make-action
+              :title "Copy URL without tracking parameters"
+              :description "Copy the cleaned URL without changing the buffer"
+              :category "URL"
+              :priority 72
+              :action (lambda () (kill-new clean) (message "Copied: %s" clean)))
+             actions)))))
+    actions))
 
 ;;; ── File path ─────────────────────────────────────────────────────────────
 
@@ -4727,6 +4909,119 @@ The result is one of `merge', `rebase', `cherry-pick' or `revert'."
                   (dired-omit-mode 'toggle)
                   (message "Hidden files %s"
                            (if dired-omit-mode "hidden" "visible"))))))))
+
+(defun init-dwim-dired-extra-provider ()
+  "Additional Dired actions: paths, external open, git and file statistics."
+  (when (derived-mode-p 'dired-mode)
+    (let ((file (ignore-errors (dired-get-filename nil t)))
+          (marked (ignore-errors (dired-get-marked-files)))
+          (in-git (locate-dominating-file default-directory ".git"))
+          (actions nil))
+      (when file
+        (push
+         (init-dwim-make-action
+          :title "Copy full path"
+          :description "Copy the absolute path of the file at point"
+          :category "Dired"
+          :priority 78
+          :action (lambda () (kill-new file) (message "Copied %s" file)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Copy file name"
+          :description "Copy the name of the file at point without its directory"
+          :category "Dired"
+          :priority 77
+          :action (lambda ()
+                    (kill-new (file-name-nondirectory file))
+                    (message "Copied %s" (file-name-nondirectory file))))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Open externally"
+          :description "Open the file with the system's default application"
+          :category "Dired"
+          :priority 74
+          :action (lambda () (init-dwim--open-externally file)))
+         actions))
+
+      (when marked
+        (push
+         (init-dwim-make-action
+          :title "Run shell command on marked files"
+          :description "Run a shell command on the marked files, or the file at point"
+          :category "Dired"
+          :priority 56
+          :predicate (lambda () (commandp 'dired-do-shell-command))
+          :action (lambda () (call-interactively #'dired-do-shell-command)))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Hash marked files"
+          :description "List the SHA-256 digest of each marked file"
+          :category "Dired"
+          :priority 48
+          :action (lambda ()
+                    (let ((files (seq-filter #'file-regular-p marked)))
+                      (unless files (user-error "No regular files selected"))
+                      (with-current-buffer (get-buffer-create "*File hashes*")
+                        (erase-buffer)
+                        (dolist (path files)
+                          (insert (or (init-dwim--file-sha256 path) "(file too large)")
+                                  "  " (file-name-nondirectory path) "\n"))
+                        (goto-char (point-min))
+                        (pop-to-buffer (current-buffer))))))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Show total size of marked files"
+          :description "Add up the sizes of the marked files, skipping directories"
+          :category "Dired"
+          :priority 47
+          :action (lambda ()
+                    (let* ((files (seq-filter #'file-regular-p marked))
+                           (total (apply #'+ (mapcar (lambda (path)
+                                                       (file-attribute-size (file-attributes path)))
+                                                     files))))
+                      (message "%d file(s), %s (directories skipped: %d)"
+                               (length files)
+                               (file-size-human-readable total 'iec " ")
+                               (- (length marked) (length files))))))
+         actions)
+
+        (when in-git
+          (push
+           (init-dwim-make-action
+            :title "Git add marked files"
+            :description "Stage the marked files, or the file at point"
+            :category "Dired"
+            :priority 68
+            :predicate (lambda () (executable-find "git"))
+            :action (lambda ()
+                      (if (zerop (apply #'call-process "git" nil nil nil "add" "--" marked))
+                          (message "Staged %d item(s)" (length marked))
+                        (user-error "git add failed"))))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title "Stop tracking marked files"
+            :description "Remove the marked files from git while keeping them on disk"
+            :category "Dired"
+            :priority 52
+            :predicate (lambda () (executable-find "git"))
+            :action (lambda ()
+                      (when (y-or-n-p (format "Remove %d item(s) from the git index? Files stay on disk. "
+                                              (length marked)))
+                        (if (zerop (apply #'call-process "git" nil nil nil "rm" "--cached" "-r" "--" marked))
+                            (message "Untracked %d item(s)" (length marked))
+                          (user-error "git rm failed")))))
+           actions)))
+      actions)))
 
 ;;; ── Magit ─────────────────────────────────────────────────────────────────
 
@@ -8728,6 +9023,80 @@ is retained for compatibility but returns nil."
     :action (lambda ()
               (consult-line isearch-string)))))
 
+(defun init-dwim-history-extra-provider ()
+  "Additional history actions: mark rings, recent directories and regional undo."
+  (let ((bounds (init-dwim--region-bounds))
+        (actions nil))
+    (when bounds
+      (push
+       (init-dwim-make-action
+        :title "Undo changes inside region"
+        :description "Undo only the edits made within the selected text"
+        :category "History"
+        :priority 72
+        :action (lambda ()
+                  (push-mark (car bounds) t t)
+                  (goto-char (cdr bounds))
+                  (activate-mark)
+                  (call-interactively #'undo)))
+       actions))
+
+    (push
+     (init-dwim-make-action
+      :title "Open recent directory"
+      :description "Visit one of the directories of recently opened files in Dired"
+      :category "History"
+      :priority 68
+      :predicate (lambda () (bound-and-true-p recentf-list))
+      :action (lambda ()
+                (dired (completing-read
+                        "Directory: "
+                        (or (init-dwim--recent-directories)
+                            (user-error "No recent directories"))
+                        nil t))))
+     actions)
+
+    (push
+     (init-dwim-make-action
+      :title "Browse mark ring"
+      :description "Search the positions saved in this buffer's mark ring"
+      :category "History"
+      :priority 64
+      :predicate (lambda () (commandp 'consult-mark))
+      :action (lambda () (call-interactively #'consult-mark)))
+     actions)
+
+    (push
+     (init-dwim-make-action
+      :title "Browse global mark ring"
+      :description "Search the positions saved across all buffers"
+      :category "History"
+      :priority 63
+      :predicate (lambda () (commandp 'consult-global-mark))
+      :action (lambda () (call-interactively #'consult-global-mark)))
+     actions)
+
+    (push
+     (init-dwim-make-action
+      :title "Jump to previous mark"
+      :description "Go back to the previous position in this buffer's mark ring"
+      :category "History"
+      :priority 62
+      :predicate (lambda () (mark t))
+      :action (lambda () (call-interactively #'pop-to-mark-command)))
+     actions)
+
+    (push
+     (init-dwim-make-action
+      :title "Jump to previous global mark"
+      :description "Go back to the previous position in the global mark ring"
+      :category "History"
+      :priority 61
+      :predicate (lambda () global-mark-ring)
+      :action (lambda () (call-interactively #'pop-global-mark)))
+     actions)
+    actions))
+
 ;;; ── Vundo (visual undo) ───────────────────────────────────────────────────
 
 (defun init-dwim-vundo-provider ()
@@ -8829,6 +9198,109 @@ is retained for compatibility but returns nil."
       :action (lambda ()
                 (kill-new (number-to-string num))
                 (message "Copied: %s" num))))))
+
+(defun init-dwim-number-extra-provider ()
+  "Additional actions for numbers at point: other bases, grouping, sizes and sign."
+  (let ((actions nil))
+    (when-let ((m (init-dwim--match-at-point
+                   "\\b0\\(?:[xX][0-9a-fA-F]+\\|[bB][01]+\\|[oO][0-7]+\\)\\b")))
+      (let* ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m))
+             (base (pcase (downcase (substring txt 1 2)) ("x" 16) ("b" 2) (_ 8)))
+             (value (string-to-number (substring txt 2) base)))
+        (push
+         (init-dwim-make-action
+          :title "Convert literal to decimal"
+          :description (format "Rewrite %s as %d" txt value)
+          :category "Number"
+          :priority 86
+          :action (lambda () (init-dwim--replace-span beg end (number-to-string value))))
+         actions)))
+
+    (when-let ((m (init-dwim--decimal-at-point)))
+      (let* ((beg (nth 0 m)) (end (nth 1 m))
+             (value (string-to-number (nth 2 m))))
+        (push
+         (init-dwim-make-action
+          :title "Convert number to binary"
+          :description "Rewrite the integer as a 0b binary literal"
+          :category "Number"
+          :priority 74
+          :action (lambda ()
+                    (init-dwim--replace-span
+                     beg end
+                     (concat (if (< value 0) "-" "") "0b"
+                             (init-dwim--integer-to-binary (abs value))))))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "Convert number to octal"
+          :description "Rewrite the integer as a 0o octal literal"
+          :category "Number"
+          :priority 73
+          :action (lambda ()
+                    (init-dwim--replace-span
+                     beg end
+                     (concat (if (< value 0) "-" "") (format "0o%o" (abs value))))))
+         actions)
+
+        (when (>= (abs value) 1000)
+          (push
+           (init-dwim-make-action
+            :title "Add thousands separators"
+            :description "Group the digits in threes with commas"
+            :category "Number"
+            :priority 66
+            :action (lambda ()
+                      (init-dwim--replace-span
+                       beg end
+                       (let ((digits (number-to-string (abs value))) (out ""))
+                         (while (> (length digits) 3)
+                           (setq out (concat "," (substring digits -3) out)
+                                 digits (substring digits 0 -3)))
+                         (concat (if (< value 0) "-" "") digits out)))))
+           actions))
+
+        (when (>= (abs value) 1024)
+          (push
+           (init-dwim-make-action
+            :title "Show number as human-readable size"
+            :description "Show the value as KiB, MiB or GiB and copy it"
+            :category "Number"
+            :priority 62
+            :action (lambda ()
+                      (let ((size (file-size-human-readable (abs value) 'iec " ")))
+                        (kill-new size)
+                        (message "%d bytes = %s" value size))))
+           actions))))
+
+    (when-let ((m (init-dwim--match-at-point
+                   "\\b[0-9]\\{1,3\\}\\(?:,[0-9]\\{3\\}\\)+\\b")))
+      (let ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m)))
+        (push
+         (init-dwim-make-action
+          :title "Remove thousands separators"
+          :description "Drop the commas from the grouped number"
+          :category "Number"
+          :priority 65
+          :action (lambda ()
+                    (init-dwim--replace-span beg end (replace-regexp-in-string "," "" txt))))
+         actions)))
+
+    (when-let ((m (init-dwim--decimal-at-point t)))
+      (let ((beg (nth 0 m)) (end (nth 1 m)) (txt (nth 2 m)))
+        (push
+         (init-dwim-make-action
+          :title "Negate number"
+          :description "Flip the sign of the number at point"
+          :category "Number"
+          :priority 80
+          :action (lambda ()
+                    (init-dwim--replace-span
+                     beg end
+                     (if (string-prefix-p "-" txt) (substring txt 1) (concat "-" txt)))))
+         actions)))
+    actions))
 
 (defun init-dwim-literal-provider ()
   "Actions for dates, UUIDs, versions, colors, booleans, emails, strings, names."
@@ -11319,6 +11791,86 @@ is retained for compatibility but returns nil."
 
     actions))
 
+(defun init-dwim-docker-extra-provider ()
+  "Additional Docker actions for Dockerfile buffers and Compose services."
+  (let ((actions nil)
+        (root (init-dwim--project-root)))
+    (when (init-dwim--dockerfile-buffer-p)
+      (let ((file buffer-file-name))
+        (push
+         (init-dwim-make-action
+          :title "docker build this Dockerfile"
+          :description "Build an image from the Dockerfile in this buffer"
+          :category "Docker"
+          :priority 86
+          :predicate (lambda () (executable-find "docker"))
+          :action (lambda ()
+                    (let ((tag (read-string "Docker tag: "
+                                            (file-name-nondirectory
+                                             (directory-file-name root)))))
+                      (init-dwim--run-in-project
+                       (format "docker build -f %s -t %s ."
+                               (shell-quote-argument (file-relative-name file root))
+                               (shell-quote-argument tag))))))
+         actions)
+
+        (push
+         (init-dwim-make-action
+          :title "hadolint this Dockerfile"
+          :description "Lint the Dockerfile in this buffer with hadolint"
+          :category "Docker"
+          :priority 80
+          :predicate (lambda () (executable-find "hadolint"))
+          :action (lambda ()
+                    (init-dwim--run-in-project
+                     (format "hadolint %s"
+                             (shell-quote-argument (file-relative-name file root))))))
+         actions)))
+
+    (when-let ((compose (cl-find-if #'init-dwim-extra--project-has-file-p
+                                    '("compose.yaml" "compose.yml"
+                                      "docker-compose.yaml" "docker-compose.yml"))))
+      (dolist (service (init-dwim-extra--cached-file-parse
+                        (init-dwim-extra--project-file compose)
+                        #'init-dwim-extra--parse-compose-services))
+        (let ((name (shell-quote-argument service)))
+          (push
+           (init-dwim-make-action
+            :title (format "docker compose logs -f %s" service)
+            :description (format "Follow the logs of the %s service" service)
+            :category "Docker"
+            :priority 69
+            :predicate (lambda () (executable-find "docker"))
+            :action (lambda ()
+                      (init-dwim--run-in-project
+                       (format "docker compose logs -f %s" name) t)))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title (format "docker compose exec %s sh" service)
+            :description (format "Open a shell inside the %s service" service)
+            :category "Docker"
+            :priority 67
+            :predicate (lambda () (executable-find "docker"))
+            :action (lambda ()
+                      (init-dwim--run-in-project
+                       (format "docker compose exec %s sh" name) t)))
+           actions)
+
+          (push
+           (init-dwim-make-action
+            :title (format "docker compose restart %s" service)
+            :description (format "Restart the %s service" service)
+            :category "Docker"
+            :priority 66
+            :predicate (lambda () (executable-find "docker"))
+            :action (lambda ()
+                      (init-dwim--run-in-project
+                       (format "docker compose restart %s" name))))
+           actions))))
+    actions))
+
 ;;; Quick notes DWIM provider
 
 (defun init-dwim-quick-note-provider ()
@@ -11645,6 +12197,69 @@ is retained for compatibility but returns nil."
                 (message "%s" (mapconcat #'prin1-to-string
                                          (treesit-parser-list)
                                          ", ")))))))
+
+(defun init-dwim-treesit-extra-provider ()
+  "Additional structural actions for buffers that have a tree-sitter parser."
+  (when (and (fboundp 'treesit-available-p)
+             (treesit-available-p)
+             (treesit-parser-list))
+    (list
+     (init-dwim-make-action
+      :title "Treesit copy node text"
+      :description "Copy the source text of the named node at point"
+      :category "Treesit"
+      :priority 59
+      :action (lambda ()
+                (let ((node (or (init-dwim--treesit-named-node-at-point)
+                                (user-error "No tree-sitter node at point"))))
+                  (kill-new (treesit-node-text node t))
+                  (message "Copied %s node" (treesit-node-type node)))))
+
+     (init-dwim-make-action
+      :title "Treesit kill node at point"
+      :description "Cut the named node at point, as one syntactic unit"
+      :category "Treesit"
+      :priority 56
+      :action (lambda ()
+                (let ((node (or (init-dwim--treesit-named-node-at-point)
+                                (user-error "No tree-sitter node at point"))))
+                  (kill-region (treesit-node-start node) (treesit-node-end node)))))
+
+     (init-dwim-make-action
+      :title "Treesit go to enclosing node start"
+      :description "Move to the start of the nearest enclosing syntactic construct"
+      :category "Treesit"
+      :priority 55
+      :action (lambda ()
+                (let ((node (init-dwim--treesit-named-node-at-point))
+                      (target nil))
+                  (while (and node (not target))
+                    (setq node (treesit-node-parent node))
+                    (when (and node (< (treesit-node-start node) (point)))
+                      (setq target node)))
+                  (if target
+                      (goto-char (treesit-node-start target))
+                    (user-error "No enclosing node")))))
+
+     (init-dwim-make-action
+      :title "Treesit go to enclosing function start"
+      :description "Move to the beginning of the function around point"
+      :category "Treesit"
+      :priority 53
+      :action (lambda () (beginning-of-defun)))
+
+     (init-dwim-make-action
+      :title "Treesit transpose with next sibling"
+      :description "Swap the node at point with the sibling that follows it"
+      :category "Treesit"
+      :priority 51
+      :action (lambda ()
+                (let* ((node (or (init-dwim--treesit-named-node-at-point)
+                                 (user-error "No tree-sitter node at point")))
+                       (next (or (treesit-node-next-sibling node t)
+                                 (user-error "No next sibling"))))
+                  (init-dwim--swap-spans (treesit-node-start node) (treesit-node-end node)
+                                         (treesit-node-start next) (treesit-node-end next))))))))
 
 ;;; ── Transient ────────────────────────────────────────────────────────────
 
@@ -12861,6 +13476,106 @@ is retained for compatibility but returns nil."
                   (with-current-buffer "*eshell*"
                     (insert (string-trim cmd))
                     (eshell-send-input))))))))
+
+
+;;; ── SQL ───────────────────────────────────────────────────────────────────
+
+(defun init-dwim-sql-provider ()
+  "Actions for SQL buffers: sessions, sending statements and inspecting tables."
+  (when (derived-mode-p 'sql-mode)
+    (let* ((bounds (init-dwim--region-bounds))
+           (actions nil))
+      (push
+       (init-dwim-make-action
+        :title "Connect to database"
+        :description "Start a SQL session from one of the saved connections"
+        :category "SQL"
+        :priority 95
+        :predicate (lambda () (commandp 'sql-connect))
+        :action (lambda () (call-interactively #'sql-connect)))
+       actions)
+
+      (when bounds
+        (push
+         (init-dwim-make-action
+          :title "Send region to SQL session"
+          :description "Run the selected statements in the SQL session"
+          :category "SQL"
+          :priority 94
+          :predicate (lambda () (fboundp 'sql-send-region))
+          :action (lambda () (sql-send-region (car bounds) (cdr bounds))))
+         actions))
+
+      (push
+       (init-dwim-make-action
+        :title "Send statement at point"
+        :description "Run the statement around point in the SQL session"
+        :category "SQL"
+        :priority 92
+        :predicate (lambda () (commandp 'sql-send-paragraph))
+        :action (lambda () (call-interactively #'sql-send-paragraph)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Send buffer to SQL session"
+        :description "Run the whole buffer in the SQL session"
+        :category "SQL"
+        :priority 85
+        :predicate (lambda () (commandp 'sql-send-buffer))
+        :action (lambda () (call-interactively #'sql-send-buffer)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "List database objects"
+        :description "List the tables, views and other objects of the database"
+        :category "SQL"
+        :priority 72
+        :predicate (lambda () (commandp 'sql-list-all))
+        :action (lambda () (call-interactively #'sql-list-all)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Describe table"
+        :description "Show the columns of a table, defaulting to the name at point"
+        :category "SQL"
+        :priority 71
+        :predicate (lambda () (commandp 'sql-list-table))
+        :action (lambda () (call-interactively #'sql-list-table)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Show SQL session buffer"
+        :description "Switch to the buffer of the SQL session"
+        :category "SQL"
+        :priority 70
+        :predicate (lambda () (commandp 'sql-show-sqli-buffer))
+        :action (lambda () (call-interactively #'sql-show-sqli-buffer)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Select SQL session buffer"
+        :description "Choose which session this buffer sends its statements to"
+        :category "SQL"
+        :priority 60
+        :predicate (lambda () (commandp 'sql-set-sqli-buffer))
+        :action (lambda () (call-interactively #'sql-set-sqli-buffer)))
+       actions)
+
+      (push
+       (init-dwim-make-action
+        :title "Change SQL dialect"
+        :description "Set the database product used for highlighting and sessions"
+        :category "SQL"
+        :priority 55
+        :predicate (lambda () (commandp 'sql-set-product))
+        :action (lambda () (call-interactively #'sql-set-product)))
+       actions)
+      actions)))
 
 ;;; ── EWW browser ───────────────────────────────────────────────────────────
 
@@ -15489,10 +16204,12 @@ is retained for compatibility but returns nil."
         init-dwim-expand-region-provider
         init-dwim-rectangle-provider
         init-dwim-url-provider
+        init-dwim-url-extra-provider
         init-dwim-file-utility-provider
         init-dwim-file-path-provider
         init-dwim-symbol-provider
         init-dwim-number-provider
+        init-dwim-number-extra-provider
         init-dwim-literal-provider
         init-dwim-register-provider
         init-dwim-narrow-provider
@@ -15527,6 +16244,7 @@ is retained for compatibility but returns nil."
         init-dwim-window-provider
         init-dwim-tab-bar-provider
         init-dwim-dired-provider
+        init-dwim-dired-extra-provider
         init-dwim-find-dired-provider
         init-dwim-focus-provider
         init-dwim-security-provider
@@ -15567,6 +16285,7 @@ is retained for compatibility but returns nil."
         init-dwim-diagnostic-at-point-provider
         init-dwim-dap-provider
         init-dwim-treesit-provider
+        init-dwim-treesit-extra-provider
         init-dwim-outline-provider
         init-dwim-xref-provider
         init-dwim-xref-buffer-provider
@@ -15581,10 +16300,12 @@ is retained for compatibility but returns nil."
         init-dwim-javascript-provider
         init-dwim-ruby-provider
         init-dwim-sh-provider
+        init-dwim-sql-provider
         init-dwim-json-yaml-provider
         init-dwim-csv-provider
         init-dwim-restclient-provider
         init-dwim-docker-provider
+        init-dwim-docker-extra-provider
 
         ;; Shells, terminals, output buffers, and search state.
         init-dwim-compile-provider
@@ -15598,6 +16319,7 @@ is retained for compatibility but returns nil."
 
         ;; History and undo
         init-dwim-history-provider
+        init-dwim-history-extra-provider
         init-dwim-vundo-provider
         
         ;; AI integrations.
